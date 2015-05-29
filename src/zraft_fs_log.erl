@@ -55,7 +55,7 @@
     logger/0
 ]).
 
--include_lib("zont_sync/include/zraft.hrl").
+-include_lib("zraft_lib/include/zraft.hrl").
 
 -define(SEGMENT_VERSION, 1).
 -define(RECORD_START, 0).

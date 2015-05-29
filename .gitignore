@@ -8,3 +8,4 @@ ebin
 .settings
 doc
 *.iml
+.rebar

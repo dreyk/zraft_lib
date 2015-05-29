@@ -40,7 +40,7 @@
     stop/1
 ]).
 
--include_lib("zont_sync/include/zraft.hrl").
+-include_lib("zraft_lib/include/zraft.hrl").
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").

@@ -22,7 +22,7 @@
 
 -behaviour(gen_fsm).
 
--include_lib("zont_sync/include/zraft.hrl").
+-include_lib("zraft_lib/include/zraft.hrl").
 
 %% gen_fsm callbacks
 -export([init/1,

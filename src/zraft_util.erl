@@ -56,7 +56,7 @@ escape_node([E|T])->
 
 
 get_env(Key, Default) ->
-    case application:get_env(zraft, Key) of
+    case application:get_env(zraft_lib, Key) of
         {ok, Value} ->
             Value;
         _ ->

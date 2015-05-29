@@ -39,7 +39,7 @@
     stop/1
 ]).
 
--include_lib("zont_sync/include/zraft.hrl").
+-include_lib("zraft_lib/include/zraft.hrl").
 
 -define(SNAPSHOT_HEADER_VERIOSN, 1).
 

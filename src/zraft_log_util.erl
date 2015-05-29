@@ -20,7 +20,7 @@
 -module(zraft_log_util).
 -author("dreyk").
 
--include_lib("zont_sync/include/zraft.hrl").
+-include_lib("zraft_lib/include/zraft.hrl").
 
 -export([
     append_request/5
