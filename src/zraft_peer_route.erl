@@ -42,7 +42,7 @@ reply_proxy({_,{_Ref,Pid}}=Peer,Reply) when is_pid(Pid)->
 
 start_peer({Name,Node},BackEnd) when is_atom(Node)->
     spawn(fun()->
-        Res = rpc:call(Node,zraft_sup,start_consensus,[{Name,Node},BackEnd]),
+        Res = rpc:call(Node,zraft_lib_sup,start_consensus,[{Name,Node},BackEnd]),
         lager:info("Start remote ~p: ~p",[{Name,Node},Res])
     end);
 start_peer(_,_)->

@@ -17,7 +17,7 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
--module(zraft_sup).
+-module(zraft_lib_sup).
 -author("dreyk").
 
 -behaviour(supervisor).

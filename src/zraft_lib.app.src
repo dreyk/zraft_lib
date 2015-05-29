@@ -1,0 +1,13 @@
+{application, zraft_lib,
+    [
+        {description, "Erlang RAFT protocal implementation"},
+        {vsn, "0.5.0"},
+        {registered, []},
+        {applications, [
+            kernel,
+            stdlib,
+            lager
+        ]},
+        {mod, {zraft_lib_app, []}},
+        {env, []}
+    ]}.
