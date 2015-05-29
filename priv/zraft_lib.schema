@@ -186,13 +186,6 @@
   merge
 ]}.
 
-%% Because of the 'merge' keyword in the proplist below, the docs and datatype
-%% are pulled from the leveldb schema.
-{mapping, "leveldb.limited_developer_mem", "eleveldb.limited_developer_mem", [
-  {default, on},
-  {level, basic},
-  merge
-]}.
 
 %% @doc erlang vm shutdown_time is useful when running a riak_test devrel
 {mapping, "erlang.shutdown_time", "vm_args.-shutdown_time", [
@@ -202,7 +195,7 @@
 
 %% @doc Election timeout.
 {mapping, "zraft.election-timeout", "zraft_lib.election_timeout", [
-  {default,500ms},
+  {default,"500ms"},
   {datatype, {duration, ms}}
 ]}.
 
@@ -220,13 +213,13 @@
 
 %% @doc Directory to write snapshots.
 {mapping, "zraft.raft-snapshot-dir", "zraft_lib.snapshot_dir", [
-  {default,$(platform_data_dir)},
+  {default,"$(platform_data_dir)"},
   {datatype,file}
 ]}.
 
 %% @doc Directory to write raft log files.
 {mapping, "zraft.raft-log-dir", "zraft_lib.log_dir", [
-  {default,$(platform_data_dir)},
+  {default,"$(platform_data_dir)"},
   {datatype,file}
 ]}.
 
