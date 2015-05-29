@@ -38,6 +38,7 @@
     value/3,
     stop/1,
     cmd/2,
+    stat/2,
     stop_sync/1]).
 
 -record(snapshot_progress, {files, process, mref, index}).
@@ -54,6 +55,9 @@
     current_epoch = 0,
     back_end, request_timeout, snapshot_progres}).
 
+
+stat(Peer,From)->
+    gen_server:cast(Peer,{stat,From}).
 
 value(Peer, From, GetIndex) ->
     gen_server:cast(Peer, {get, From, GetIndex}).
@@ -276,6 +280,11 @@ handle_cast({?UPDATE_CMD, Fun}, State = #state{peer = Peer}) ->
 handle_cast({get, From, GetIndex}, State = #state{peer = Peer}) ->
     reply(From, erlang:element(GetIndex, Peer)),
     {noreply, State};
+handle_cast({stat, From}, State = #state{peer = Peer,snapshot_progres = Progress}) ->
+    IsSnapshoting = (Progress /= undefined),
+    Stat = #proxy_peer_stat{peer_state = Peer,is_snapshoting = IsSnapshoting},
+    reply(From, {Peer#peer.id,Stat}),
+    {noreply, State};
 handle_cast(_Request, State) ->
     {noreply, State}.
 
@@ -327,7 +336,9 @@ replicate(Req, State) ->
     #state{peer = Peer, id = ID, request_timeout = Timeout} = State,
     #peer{id = PeerID} = Peer,
     RequestRef = erlang:make_ref(),
-    zraft_peer_route:cmd(PeerID, Req#append_entries{request_ref = RequestRef, from = {ID, self()}}),
+    #append_entries{commit_index = Commit,prev_log_index = Prev,entries = Entries}=Req,
+    NewCommitIndex = min(Commit,Prev+length(Entries)),
+    zraft_peer_route:cmd(PeerID, Req#append_entries{commit_index = NewCommitIndex,request_ref = RequestRef, from = {ID, self()}}),
     Timer = zraft_util:gen_server_cast_after(Timeout, request_timeout),
     State#state{request_ref = RequestRef, request_timer = Timer}.
 

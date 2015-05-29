@@ -60,14 +60,12 @@
 -define(SEGMENT_VERSION, 1).
 -define(RECORD_START, 0).
 
+-define(DATA_DIR, zraft_util:get_env(log_dir, "data")).
+
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -define(MAX_SEGMENT_SIZE, 73).%% three entry per segment
--define(DATA_DIR, "test").
--endif.
-
--ifndef(TEST).
--define(DATA_DIR, zraft_util:get_env(log_dir, "data")).
+-else.
 -define(MAX_SEGMENT_SIZE, zraft_util:get_env(max_segment_size, 10485760)).%%10 MB
 -endif.
 
@@ -231,6 +229,8 @@ handle_info(_Info, State) ->
 
 terminate(_Reason, #fs{open_segment = Open} = FS) ->
     close_segment(Open, FS),
+    ok;
+terminate(_Reason,_) ->
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -909,12 +909,14 @@ need_snapshot(Req,#fs{peer_id = Peer})->
     NewReq = #install_snapshot{from = From,request_ref = Ref,data=prepare},
     zraft_consensus:need_snapshot(Peer,NewReq).
 
-handle_replicate_log(ToPeer,_NextIndex,PrevTerm,Req=#append_entries{entries = false},State)->
-    Req1 = Req#append_entries{commit_index = State#fs.commit,entries = [],prev_log_term = PrevTerm},
+handle_replicate_log(ToPeer,NextIndex,PrevTerm,Req=#append_entries{entries = false},State)->
+    Commit = min(State#fs.commit,NextIndex-1),
+    Req1 = Req#append_entries{commit_index = Commit,entries = [],prev_log_term = PrevTerm},
     zraft_peer_route:cmd(ToPeer, Req1);
 handle_replicate_log(ToPeer,NextIndex,PrevTerm,Req,State)->
     Entries = entries(NextIndex,State#fs.last_index, State),
-    Req1 = Req#append_entries{commit_index = State#fs.commit,entries = Entries,prev_log_term = PrevTerm},
+    Commit = min(State#fs.commit,NextIndex-1+length(Entries)),
+    Req1 = Req#append_entries{commit_index = Commit,entries = Entries,prev_log_term = PrevTerm},
     zraft_peer_route:cmd(ToPeer, Req1).
 
 make_snapshot_info(Index,#fs{peer_id = ID,commit = Commit}) when Commit<Index->
@@ -950,10 +952,10 @@ make_snapshot_info(Index,
 
 -ifdef(TEST).
 setup_log() ->
-    zraft_util:del_dir(?DATA_DIR),
+    zraft_util:set_test_dir("test-log"),
     ok.
 stop_log(_) ->
-    zraft_util:del_dir(?DATA_DIR),
+    zraft_util:clear_test_dir("test-log"),
     ok.
 
 -define(INITIAL_ENTRY, [

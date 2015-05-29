@@ -42,19 +42,17 @@
 -include_lib("zraft_lib/include/zraft.hrl").
 
 -define(SNAPSHOT_HEADER_VERIOSN, 1).
+-define(DATA_DIR, zraft_util:get_env(snapshot_dir, "data")).
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -define(MAX_COUNT, 10).
 -define(SNAPSHOT_BACKUP, true).
--define(DATA_DIR, "test").
--endif.
-
--ifndef(TEST).
--define(DATA_DIR, zraft_util:get_env(snapshot_dir, "data")).
+-else.
 -define(MAX_COUNT, zraft_util:get_env(max_log_count, 1000)).
 -define(SNAPSHOT_BACKUP, zraft_util:get_env(snapshot_backup, false)).
 -endif.
+
 
 -record(state, {
     raft,
@@ -472,11 +470,10 @@ truncate_log(Raft,SnapshotInfo)->
 
 -ifdef(TEST).
 setup() ->
-    zraft_util:del_dir(?DATA_DIR),
-    zraft_util:make_dir(?DATA_DIR),
+    zraft_util:set_test_dir("test-snapshot"),
     ok.
 clear_setup(_) ->
-    zraft_util:del_dir(?DATA_DIR),
+    zraft_util:clear_test_dir("test-snapshot"),
     ok.
 
 backend_test_() ->

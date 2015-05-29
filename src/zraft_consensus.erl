@@ -72,18 +72,31 @@
     get_conf/2,
     write/3,
     truncate_log/2,
-    set_new_configuration/4
+    set_new_configuration/4,
+    stat/1
 ]).
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
--define(DATA_DIR, "test").
+-define(INFO(S, As), ?debugFmt("[INFO] " ++ S, As)).
+-define(INFO(S), ?debugMsg("[INFO] " ++ S)).
+-define(WARNING(S, As), ?debugFmt("[WARNING] " ++ S, As)).
+-define(WARNING(S), ?debugMsg("[WARNING] " ++ S)).
+-define(ERROR(S, As), ?debugFmt("[ERROR] " ++ S, As)).
+-define(ERROR(S), ?debugMsg("[ERROR] " ++ S)).
+-else.
+-define(INFO(S, As), lager:info(S, As)).
+-define(INFO(S), lager:info(S)).
+-define(WARNING(S, As), lager:warning(S, As)).
+-define(WARNING(S), lager:warning(S)).
+-define(ERROR(S, As), lager:error(S, As)).
+-define(ERROR(S), lager:error(S)).
 -endif.
 
 -define(ETIMEOUT, zraft_util:get_env(?ELECTION_TIMEOUT_PARAM, ?ELECTION_TIMEOUT)).
 
--record(init_state, {log, fsm, id, back_end,snapshot_info,async,bootstrap=false}).
--record(sessions,{read=[],write=[],conf}).
+-record(init_state, {log, fsm, id, back_end, snapshot_info, async, bootstrap = false}).
+-record(sessions, {read = [], write = [], conf}).
 -record(state, {
     log,
     config,
@@ -101,11 +114,11 @@
     last_hearbeat,
     election_timeout,
     state_fsm,
-    sessions=#sessions{}}).
+    sessions = #sessions{}}).
 
 -record(config, {id, state, conf, old_peers, new_peers}).
 -record(read_request, {function, args, start_time, timeout}).
--record(conf_change_requet,{prev_id,start_time,timeout,from,peers,index}).
+-record(conf_change_requet, {prev_id, start_time, timeout, from, peers, index}).
 -record(write_request, {data, start_time, timeout, from}).
 -type raft_term() :: non_neg_integer().
 -type index() :: non_neg_integer().
@@ -144,8 +157,8 @@ write(PeerID, Data, Timeout) ->
     gen_fsm:sync_send_all_state_event(PeerID, Req, Timeout).
 
 %% @doc Write data to user backend
--spec set_new_configuration(peer_id(),index(),list(peer_id()),timeout()) -> ok|{leader, peer_id()}|{error, term()}.
-set_new_configuration(PeerID,PrevID,Peers,Timeout)->
+-spec set_new_configuration(peer_id(), index(), list(peer_id()), timeout()) -> ok|{leader, peer_id()}|{error, term()}.
+set_new_configuration(PeerID, PrevID, Peers, Timeout) ->
     Now = os:timestamp(),
     Req = #conf_change_requet{
         prev_id = PrevID,
@@ -154,7 +167,8 @@ set_new_configuration(PeerID,PrevID,Peers,Timeout)->
         start_time = Now},
     gen_fsm:sync_send_all_state_event(PeerID, Req, Timeout).
 
-
+stat(Peer) ->
+    gen_fsm:sync_send_all_state_event(Peer, stat).
 %%%===================================================================
 %%% Internal Server API
 %%%===================================================================
@@ -199,9 +213,9 @@ need_snapshot(Peer, NewReq) ->
 make_snapshot_info(Peer, From, Index) ->
     send_event(Peer, {make_snapshot_info, From, Index}).
 
--spec truncate_log(from_peer_addr(),#snapshot_info{})->ok.
-truncate_log(Raft,SnapshotInfo)->
-    send_all_state_event(Raft,SnapshotInfo).
+-spec truncate_log(from_peer_addr(), #snapshot_info{}) -> ok.
+truncate_log(Raft, SnapshotInfo) ->
+    send_all_state_event(Raft, SnapshotInfo).
 
 -spec send_leader_request(peer_id(), atom(), list(), timeout()) -> {ok, term()}|retry|{error, not_leader}|{error, term()}.
 send_leader_request(PeerID, Function, Args, Timeout) ->
@@ -209,29 +223,18 @@ send_leader_request(PeerID, Function, Args, Timeout) ->
     Req = #read_request{timeout = zraft_util:miscrosec_timeout(Timeout), function = Function, args = Args, start_time = Now},
     gen_fsm:sync_send_all_state_event(PeerID, Req, Timeout).
 
-
-%%%===================================================================
-%%% ONLY FOR TEST!!!!!!
-%%%===================================================================
--ifdef(TEST).
-append_test(P, E) ->
-    gen_fsm:sync_send_event(P, {append_test, E}).
-force_timeout(P) ->
-    gen_fsm:sync_send_all_state_event(P, force_timeout).
--endif.
-
-
 %%%===================================================================
 %%% Peer lifecycle
 %%%===================================================================
 init([PeerID, BackEnd]) ->
-    {ok, FSM} = zraft_fsm:start_link(peer(PeerID),BackEnd),
+    {ok, FSM} = zraft_fsm:start_link(peer(PeerID), BackEnd),
     {ok, Log} = zraft_fs_log:start_link(PeerID),
-    {ok,load,#init_state{fsm = FSM, log = Log, back_end = BackEnd, id = PeerID}}.
+    {ok, load, #init_state{fsm = FSM, log = Log, back_end = BackEnd, id = PeerID}}.
 
-init_state(InitState)->
+init_state(InitState) ->
+    ?INFO("init state"),
     #init_state{
-        id=PeerID,
+        id = PeerID,
         fsm = FSM,
         log = Log,
         back_end = BackEnd,
@@ -255,13 +258,13 @@ init_state(InitState)->
                 snapshot_info = Info,
                 election_timeout = ?ETIMEOUT
             },
-            State2 = set_config(ConfDescr, State1),
+            State2 = set_config(follower,ConfDescr, State1),
             State3 = start_timer(State2),
             case InitState#init_state.bootstrap of
-                false->
+                false ->
                     {next_state, follower, State3};
-                From->
-                    bootstrap(From,State3)
+                From ->
+                    bootstrap(From, State3)
             end
     end.
 
@@ -277,13 +280,18 @@ maybe_set_back_end(_NewBackEnd, _Meta, _Log) ->
 %%%===================================================================
 %%% Load state
 %%%===================================================================
-load(_,State)->
-    {next_state,load,State}.
+load(_, State) ->
+    {next_state, load, State}.
 
-load(bootstrap,From,State)->
-    {next_state,load,State#init_state{bootstrap = From}};
-load(_,_,State)->
-    {next_state,load,State}.
+load(bootstrap, From, State) ->
+    case State#init_state.bootstrap of
+        false ->
+            {next_state, load, State#init_state{bootstrap = From}};
+        _ ->
+            {reply, ok, load, State}
+    end;
+load(_, _, State) ->
+    {next_state, load, State}.
 %%%===================================================================
 %%% Follower state
 %%%===================================================================
@@ -302,39 +310,39 @@ follower(Req = #vote_request{}, State) ->
 follower(Req, State = #state{}) ->
     drop_request(follower, Req, State).
 
-follower(bootstrap,From, State) ->
-    bootstrap(From,State);
+follower(bootstrap, From, State) ->
+    bootstrap(From, State);
 follower(_Event, _From, State) ->
-    {reply,{error,follower_not_supported}, follower, State}.
+    {reply, {error, follower_not_supported}, follower, State}.
 
-bootstrap(From,State = #state{config = ?BLANK_CONF, id = PeerID}) ->
+bootstrap(From, State = #state{config = ?BLANK_CONF, id = PeerID}) ->
     case check_blank_state(State) of
         true ->
-            gen_fsm:reply(From,ok),
+            gen_fsm:reply(From, ok),
             NewTerm = 1,
             Entry = #enrty{index = 1, type = ?OP_CONFIG, term = NewTerm, data = #pconf{old_peers = [PeerID]}},
             State1 = append([Entry], State),
             step_down(blank, NewTerm, State1);
         _ ->
-            gen_fsm:reply(From,{error,invalid_blank_state}),
-            {stop,invalid_blank_state,State}
+            gen_fsm:reply(From, {error, invalid_blank_state}),
+            {stop, invalid_blank_state, State}
     end;
-bootstrap(From,State) ->
-    gen_fsm:reply(From,{error,invalid_blank_state}),
-    {next_state,follower,State}.
+bootstrap(From, State) ->
+    gen_fsm:reply(From, {error, invalid_blank_state}),
+    {next_state, follower, State}.
 
 %%%===================================================================
 %%% Candidate State
 %%%===================================================================
 candidate(timeout, State = #state{current_term = Term}) ->
-    lager:info("~p: Candidate start new election. Prev term ~p timed out", [State#state.id, Term]),
+    ?INFO("~p: Candidate start new election. Prev term ~p timed out", [State#state.id, Term]),
     start_election(State);
 candidate(#vote_reply{request_term = Term1}, State = #state{current_term = Term2}) when Term1 /= Term2 ->
     %%ignore result. May be expired
     {next_state, candidate, State};
 candidate(R = #vote_reply{peer_term = Term1, commit = CommitIndex},
     State = #state{current_term = Term2}) when Term1 > Term2 ->
-    lager:info("~p: Received vote response from ~p. PeerTerm:~p > SelfTerm:~p",
+    ?INFO("~p: Received vote response from ~p. PeerTerm:~p > SelfTerm:~p",
         [State#state.id, R#vote_reply.from_peer, Term1, Term2]),
     case maybe_shutdown(CommitIndex, State) of
         true ->
@@ -343,7 +351,7 @@ candidate(R = #vote_reply{peer_term = Term1, commit = CommitIndex},
             step_down(candidate, Term1, State)
     end;
 candidate(R = #vote_reply{from_peer = PeerID, granted = Granted, epoch = Epoch}, State) ->
-    lager:info("~p: Vote ~p response from ~p.", [State#state.id, Granted, PeerID]),
+    ?INFO("~p: Vote ~p response from ~p.", [State#state.id, Granted, PeerID]),
     update_peer(PeerID, fun(P) -> P#peer{has_vote = Granted, epoch = Epoch} end, State),
     if
         Granted ->
@@ -368,7 +376,7 @@ candidate(Req, State = #state{}) ->
     drop_request(candidate, Req, State).
 
 candidate(_Event, _From, State) ->
-    {reply,{error,candidate_not_supported},candidate, State}.
+    {reply, {error, candidate_not_supported}, candidate, State}.
 
 %%%===================================================================
 %%% Leader State
@@ -407,7 +415,7 @@ leader({append_test, Es}, _From, State = #state{log_state = #log_descr{last_inde
     State1 = append(A, State),
     {reply, ok, leader, State1};
 leader(_Event, _From, State) ->
-    {reply,{error,leader_not_supported}, leader, State}.
+    {reply, {error, leader_not_supported}, leader, State}.
 
 %%drop all unknown requests
 drop_request(StateName, Req, State = #state{id = PeerID}) ->
@@ -417,25 +425,25 @@ drop_request(StateName, Req, State = #state{id = PeerID}) ->
 %%%===================================================================
 %%% FSM genaral
 %%%===================================================================
-handle_event(Info=#snapshot_info{},load,InitialState=#init_state{log = Log})->
-    Async = zraft_fs_log:truncate_before(Log,Info),
-    {next_state,load,InitialState#init_state{snapshot_info = Info,async = Async}};
-handle_event(_,load,InitialState)->
+handle_event(Info = #snapshot_info{}, load, InitialState = #init_state{log = Log}) ->
+    Async = zraft_fs_log:truncate_before(Log, Info),
+    {next_state, load, InitialState#init_state{snapshot_info = Info, async = Async}};
+handle_event(_, load, InitialState) ->
     %%drop all in load state
-    {next_state,load,InitialState};
-handle_event(Info=#snapshot_info{},StateName,State=#state{log = Log})->
-    Async = zraft_fs_log:truncate_before(Log,Info),
+    {next_state, load, InitialState};
+handle_event(Info = #snapshot_info{}, StateName, State = #state{log = Log}) ->
+    Async = zraft_fs_log:truncate_before(Log, Info),
     case zraft_fs_log:sync_fs(Async) of
-        #log_op_result{result = ok,last_conf = NewConf,log_state = LogState}->
-            State1 = State#state{log_state = LogState,snapshot_info = Info},
-            State2 = set_config(NewConf, State1),
-            {next_state,StateName,State2};
-        #log_op_result{result = Error}->
-            lager:error("~p: Fail truncate log ~p",[State#state.id,Error]),
-            {stop,Error,State};
-        Error->
-            lager:error("~p: Fail truncate log ~p",[State#state.id,Error]),
-            {stop,{error,snapshot_failed},State}
+        #log_op_result{result = ok, last_conf = NewConf, log_state = LogState} ->
+            State1 = State#state{log_state = LogState, snapshot_info = Info},
+            State2 = set_config(StateName,NewConf, State1),
+            {next_state, StateName, State2};
+        #log_op_result{result = Error} ->
+            ?ERROR("~p: Fail truncate log ~p", [State#state.id, Error]),
+            {stop, Error, State};
+        Error ->
+            ?ERROR("~p: Fail truncate log ~p", [State#state.id, Error]),
+            {stop, {error, snapshot_failed}, State}
     end;
 handle_event({sync_peer, true}, leader, State) ->
     %%log has replicated by peer proxy
@@ -450,15 +458,47 @@ handle_event({sync_peer, _MayBeCommit}, StateName, State) ->
 handle_event(_Event, StateName, State) ->
     {next_state, StateName, State}.
 
-
+handle_sync_event(stat, _From, StateName, State) ->
+    #state{
+        epoch = E,
+        allow_commit = AC,
+        back_end = BackEnd,
+        config = Config,
+        current_term = T,
+        leader = Leader
+    } = State,
+    case Config of
+        ?BLANK_CONF ->
+            Conf = ?BLANK_CONF,
+            ConfState = ?STABLE_CONF;
+        _ ->
+            #config{conf = Conf, state = ConfState} = Config
+    end,
+    AgreeIndex = quorumMin(State, #peer.last_agree_index),
+    Stat = #peer_start{
+        agree_index = AgreeIndex,
+        epoch = E,
+        term = T,
+        allow_commit = AC,
+        leader = Leader,
+        back_end = BackEnd,
+        conf = Conf,
+        conf_state = ConfState,
+        state_name = StateName,
+        log_state = State#state.log_state,
+        snapshot_info = State#state.snapshot_info,
+        proxy_peer_stats = proxy_stats(State)
+    },
+    {reply, Stat, StateName, State};
 handle_sync_event(stop, _From, _StateName, State) ->
-    {stop, normal, ok, State};
-handle_sync_event(_,_From,load,InitialState)->
+    ok = reset_subprocess(State),
+    {stop, normal, ok, ok};
+handle_sync_event(_, _From, load, InitialState) ->
     %%drop all in load state
-    {reply,{error,loading},load,InitialState};
+    {reply, {error, loading}, load, InitialState};
 handle_sync_event(Req = #read_request{args = Args}, From, leader,
     State = #state{sessions = Sessions, epoch = Epoch}) ->
-    #sessions{read = Requests}=Sessions,
+    #sessions{read = Requests} = Sessions,
     %%First we must ensure that we are leader.
     %%Change epoch and send hearbeat
     %%Reqeust will be processed than quorum will agree that we are leader
@@ -467,6 +507,7 @@ handle_sync_event(Req = #read_request{args = Args}, From, leader,
     Requests1 = [{Epoch1, Req1} | Requests],
     State1 = State#state{epoch = Epoch1, sessions = Sessions#sessions{read = Requests1}},
     replicate_peer_request(?OPTIMISTIC_REPLICATE_CMD, State1, []),
+    gen_fsm:send_all_state_event(self(), {sync_peer, false}),
     {next_state, leader, State1};
 handle_sync_event(#read_request{}, _From, StateName, State) ->
     %%Lost lidership
@@ -474,7 +515,7 @@ handle_sync_event(#read_request{}, _From, StateName, State) ->
     {reply, {leader, State#state.leader}, StateName, State};
 handle_sync_event(Req = #write_request{}, From, leader,
     State = #state{sessions = Sessions, log_state = LogState, current_term = Term}) ->
-    #sessions{write = Requests}=Sessions,
+    #sessions{write = Requests} = Sessions,
     %%Try replicate new entry.
     %%Response will be sended after entry will be ready to commit
     #log_descr{last_index = I} = LogState,
@@ -495,8 +536,8 @@ handle_sync_event(#write_request{}, _From, StateName, State) ->
     %%Lost lidership
     %%Hint new leader in respose
     {reply, {leader, State#state.leader}, StateName, State};
-handle_sync_event(Req = #conf_change_requet{}, From, leader,State) ->
-    change_configuration(Req#conf_change_requet{from = From},State);
+handle_sync_event(Req = #conf_change_requet{}, From, leader, State) ->
+    change_configuration(Req#conf_change_requet{from = From}, State);
 handle_sync_event(#conf_change_requet{}, _From, StateName, State) ->
     %%Lost lidership
     %%Hint new leader in respose
@@ -516,29 +557,34 @@ handle_sync_event(force_timeout, From, StateName, State) ->
 
 %% drop unknown
 handle_sync_event(_Event, _From, StateName, State) ->
-    Error = list_to_atom(atom_to_list(StateName)++"_not_supported"),
-    {reply,{error,Error}, StateName, State}.
+    Error = list_to_atom(atom_to_list(StateName) ++ "_not_supported"),
+    {reply, {error, Error}, StateName, State}.
 
-handle_info({Async,Res},load,InitState=#init_state{async = Async}) ->
+handle_info({Async, Res}, load, InitState = #init_state{async = Async}) ->
     case Res of
-        #log_op_result{result = ok}->
+        #log_op_result{result = ok} ->
             init_state(InitState#init_state{async = undefined});
-        #log_op_result{result = Error}->
-            lager:error("~p: Fail truncate log ~p",[InitState#init_state.id,Error]),
-            {stop,Error,InitState};
-        Error->
-            lager:error("~p: Fail truncate log ~p",[InitState#init_state.id,Error]),
-            {stop,Error,InitState}
+        #log_op_result{result = Error} ->
+            ?ERROR("~p: Fail truncate log ~p", [InitState#init_state.id, Error]),
+            {stop, Error, InitState};
+        Error ->
+            ?ERROR("~p: Fail truncate log ~p", [InitState#init_state.id, Error]),
+            {stop, Error, InitState}
     end;
 handle_info(_Info, StateName, State) ->
     {next_state, StateName, State}.
 
-terminate(_Reason,load,#init_state{log = Log,fsm = FSM}) ->
+terminate(_Reason,_,ok)->
+    ok;
+terminate(_Reason, load, #init_state{log = Log, fsm = FSM}) ->
     ok = zraft_fsm:stop(FSM),
     ok = zraft_fs_log:stop(Log),
     ok;
-terminate(_Reason, _StateName, State = #state{log = Log, state_fsm = FSM}) ->
+terminate(_Reason, _StateName,State) ->
     %%stop all subprocess
+    reset_subprocess(State).
+
+reset_subprocess(State=#state{log = Log, state_fsm = FSM})->
     stop_all_peer(State),
     ok = zraft_fsm:stop(FSM),
     ok = zraft_fs_log:stop(Log),
@@ -680,7 +726,7 @@ handle_vote_reuqest(StateName, Req, State) ->
                     end
             end;
         _ ->
-            lager:warning("Rejecting RequestVote from ~p, since we recently heard from a "
+            ?WARNING("Rejecting RequestVote from ~p, since we recently heard from a "
             "leader ~p. Should server ~p be shut down?",
                 [Req#vote_request.from, State#state.leader, Req#vote_request.from]),
             reject_vote(StateName, Req, State),
@@ -726,7 +772,7 @@ is_time_to_elect(#state{last_hearbeat = LastHearbeat, election_timeout = Timeout
 
 handle_install_snapshot(StateName, Req = #install_snapshot{term = T1, from = From},
     State = #state{current_term = T2, id = PeerID}) when T1 < T2 ->
-    lager:warning("~p: Caller ~p is out of date.", [PeerID, From]),
+    ?WARNING("~p: Caller ~p is out of date.", [PeerID, From]),
     reject_install_snapshot(Req, State),
     {next_state, StateName, State};
 handle_install_snapshot(StateName, Req = #install_snapshot{term = T1, from = From},
@@ -734,7 +780,7 @@ handle_install_snapshot(StateName, Req = #install_snapshot{term = T1, from = Fro
     {NewLeader, _} = From,
     if
         (Leader /= undefined andalso NewLeader /= Leader) orelse StateName == leader ->
-            lager:error("~p: Received install snapshot from unknown leader ~p current leader is ~p",
+            ?ERROR("~p: Received install snapshot from unknown leader ~p current leader is ~p",
                 [PeerID, NewLeader, Leader]),
             {stop, {error, invalid_new_leader}, State};
         NewLeader == Leader ->
@@ -771,7 +817,7 @@ install_snapshot(Req, State) ->
 
 handle_append_entries(StateName, Req = #append_entries{term = T1, from = From},
     State = #state{current_term = T2, id = PeerID}) when T1 < T2 ->
-    lager:warning("~p: Caller ~p is out of date.", [PeerID, From]),
+    ?WARNING("~p: Caller ~p is out of date.", [PeerID, From]),
     reject_append(Req, State),
     {next_state, StateName, State};
 handle_append_entries(StateName, Req = #append_entries{term = T1, from = From},
@@ -779,7 +825,7 @@ handle_append_entries(StateName, Req = #append_entries{term = T1, from = From},
     {NewLeader, _} = From,
     if
         (Leader /= undefined andalso NewLeader /= Leader) orelse StateName == leader ->
-            lager:error("~p: Received apped entry from unknown leader ~p current leader is ~p",
+            ?ERROR("~p: Received apped entry from unknown leader ~p current leader is ~p",
                 [PeerID, NewLeader, Leader]),
             {stop, {error, invalid_new_leader}, State};
         NewLeader == Leader ->
@@ -834,7 +880,7 @@ append_entries(Req, State = #state{log = Log, current_term = Term, id = PeerID})
     case Result of
         {true, _LastIndex, ToCommit} ->
             zraft_fsm:apply_commit(State2#state.state_fsm, ToCommit),
-            State3 = set_config(NewConf, State2),
+            State3 = set_config(follower,NewConf, State2),
             Reply1 = Reply#append_reply{success = true};
         {false, _} ->
             State3 = State2,
@@ -847,7 +893,7 @@ start_election(State =
     #state{leader = Leader, epoch = Epoch, current_term = Term, id = PeerID, log = Log, back_end = BackEnd, log_state = LogState}) ->
     NextTerm = Term + 1,
     Leader /= undefined andalso
-        lager:info("Start for election in term ~p old leader was ~p", [NextTerm, Leader]),
+        ?INFO("Start for election in term ~p old leader was ~p", [NextTerm, Leader]),
     ok = zraft_fs_log:update_raft_meta(
         Log,
         #raft_meta{voted_for = PeerID, back_end = BackEnd, current_term = NextTerm}
@@ -890,7 +936,7 @@ maybe_become_leader(FallBackStateName, State) ->
 
 %%lost lidership. Step down to follower state
 step_down(PrevState, NewTerm, State) ->
-    State1 = step_down(undefuned, undefined, PrevState, NewTerm, State),
+    State1 = step_down(undefined, undefined, PrevState, NewTerm, State),
     if
         PrevState == leader orelse PrevState == blank ->
             State2 = start_timer(State1);
@@ -947,38 +993,44 @@ maybe_shutdown(CommitIndex, #state{id = PeerID, config = Config}) ->
     end.
 
 change_configuration(Req = #conf_change_requet{peers = Peers}, State) ->
-    #state{sessions = Sessions,config = Config,current_term = Term,log_state = LogState} = State,
+    #state{sessions = Sessions, config = Config, current_term = Term, log_state = LogState} = State,
     if
-        Config#config.state /= ?STABLE_CONF->
-            {reply,not_stable,leader, State};
-        Config#config.id /= Req#conf_change_requet.prev_id->
-            {reply,newer_exists,leader, State};
-        Sessions#sessions.conf /= undefined->
-            {reply,process_prev_change,leader, State};
-        true->
-            #log_descr{last_index = Index}=LogState,
-            NextIndex = Index+1,
+        Config#config.state /= ?STABLE_CONF ->
+            {reply, not_stable, leader, State};
+        Config#config.id /= Req#conf_change_requet.prev_id ->
+            {reply, newer_exists, leader, State};
+        Sessions#sessions.conf /= undefined ->
+            {reply, process_prev_change, leader, State};
+        true ->
+            #log_descr{last_index = Index} = LogState,
+            NextIndex = Index + 1,
             NewConfEntry = #enrty{
                 term = Term,
                 index = NextIndex,
                 type = ?OP_CONFIG,
-                data = #pconf{old_peers = Config#config.old_peers,new_peers = ordsets:from_list(Peers)}
+                data = #pconf{old_peers = Config#config.old_peers, new_peers = ordsets:from_list(Peers)}
             },
             State1 = State#state{sessions = Sessions#sessions{conf = Req#conf_change_requet{index = NextIndex}}},
-            State2 = append([NewConfEntry],State1),
-            {next_state,leader,State2}
+            State2 = append([NewConfEntry], State1),
+            {next_state, leader, State2}
     end.
 
-set_config(?BLANK_CONF, State) ->
+set_config(_StateName, ?BLANK_CONF, State) ->
     State#state{config = ?BLANK_CONF};
-set_config(PConf, State = #state{config = #config{conf = PConf}}) ->
+set_config(_StateName, PConf, State = #state{config = #config{conf = PConf}}) ->
     State;
-set_config({ConfID, #pconf{old_peers = Old, new_peers = New}} = PConf,
+set_config(StateName, {ConfID, #pconf{old_peers = Old, new_peers = New}} = PConf,
     State = #state{current_term = Term, back_end = BackEnd, id = PeerID, peers = OldPeers, log_state = LogState}) ->
     NewPeersSet = ordsets:union([[PeerID], Old, New]),
     #log_descr{last_index = LastIndex, last_term = LastTerm, commit_index = Commit} = LogState,
-    HearBeat = zraft_log_util:append_request(Term, Commit, LastIndex, LastTerm, []),
+    HearBeat = if
+                   StateName == leader ->
+                       zraft_log_util:append_request(Term, Commit, LastIndex, LastTerm, []);
+                   true ->
+                       undefined
+               end,
     NewPeers = join_peers({peer(PeerID), BackEnd, HearBeat}, NewPeersSet, OldPeers, []),
+    ?INFO("New Peers ~p", [NewPeers]),
     ConfState = case New of
                     [] ->
                         ?STABLE_CONF;
@@ -1009,8 +1061,14 @@ join_peers(PeerParam, [_ID1 | T1], [{ID2, P2} | T2], Acc) -> %%ID1==ID2
     join_peers(PeerParam, T1, T2, [{ID2, P2} | Acc]).
 
 make_peer({Self, BackEnd, HearBeat}, PeerID) ->
+    {MyID, _} = Self,
     {ok, PeerPID} = zraft_peer_proxy:start_link(Self, PeerID, BackEnd),
-    zraft_peer_proxy:cmd(PeerPID, {?BECOME_LEADER_CMD, HearBeat}),
+    if
+        HearBeat == undefined orelse MyID == PeerID ->
+            ok;
+        true ->
+            zraft_peer_proxy:cmd(PeerPID, {?BECOME_LEADER_CMD, HearBeat})
+    end,
     {PeerID, PeerPID}.
 
 hasVote(#state{config = Conf, id = ID}) ->
@@ -1021,6 +1079,18 @@ hasVote(#state{config = Conf, id = ID}) ->
         _ ->
             ordsets:is_element(ID, OldPeers)
     end.
+
+proxy_stats(#state{peers = Peers}) ->
+    Ref = make_ref(),
+    From = {Ref, self()},
+    Count = lists:foldl(fun({_, P}, Acc) ->
+        zraft_peer_proxy:stat(P, From), Acc + 1 end, 0, Peers),
+    Res = collect_results(Count, Ref, []),
+    lists:ukeysort(1, Res).
+
+
+quorumMin(#state{config = ?BLANK_CONF}, _GetIndex) ->
+    0;
 quorumMin(#state{config = Conf, peers = Peers}, GetIndex) ->
     #config{state = ConfState, old_peers = OldPeers} = Conf,
     case ConfState of
@@ -1057,7 +1127,7 @@ quorumMin([], _, {Ref, _}, _GetIndex, Count) ->
 quorumMin([ID1 | T1], [{ID2, _P2} | T2], Ref, GetIndex, Count) when ID1 > ID2 ->
     quorumMin([ID1 | T1], T2, Ref, GetIndex, Count);
 quorumMin([ID1 | _T1], [{ID2, _P2} | _T2], _Ref, _GetIndex, _Count) when ID1 < ID2 ->
-    lager:error("Configuration contains peer ~p that not included to all peers", [ID1]),
+    ?ERROR("Configuration contains peer ~p that not included to all peers", [ID1]),
     exit({error, iconfig});
 quorumMin([_ID1 | T1], [{_ID2, P2} | T2], Ref, GetIndex, Count) ->%%ID1==ID2
     zraft_peer_proxy:value(P2, Ref, GetIndex),
@@ -1083,7 +1153,7 @@ quorumAll([], _, {Ref, _}, _GetIndex, Count) ->
 quorumAll([ID1 | T1], [{ID2, _P2} | T2], Ref, GetIndex, Count) when ID1 > ID2 ->
     quorumAll([ID1 | T1], T2, Ref, GetIndex, Count);
 quorumAll([ID1 | _T1], [{ID2, _P2} | _T2], _Ref, _GetIndex, _Count) when ID1 < ID2 ->
-    lager:error("Configuration contains peer ~p that not included to all peers", [ID1]),
+    ?ERROR("Configuration contains peer ~p that not included to all peers", [ID1]),
     exit({error, iconfig});
 quorumAll([_ID1 | T1], [{_ID2, P2} | T2], Ref, GetIndex, Count) ->%%ID1==ID2
     zraft_peer_proxy:value(P2, Ref, GetIndex),
@@ -1102,10 +1172,10 @@ collect_all(Count, Ref, Acc) ->
 append(Entries, State = #state{log = Log}) ->
     Async = zraft_fs_log:append_leader(Log, Entries),
     #log_op_result{log_state = LogState1, last_conf = NewConf, result = ok} = zraft_fs_log:sync_fs(Async),
-    replicate_peer_request(?OPTIMISTIC_REPLICATE_CMD, State, Entries),
     State1 = State#state{log_state = LogState1},
-    State2 = set_config(NewConf, State1),
+    State2 = set_config(leader,NewConf, State1),
     ok = update_peer_last_index(State2),
+    replicate_peer_request(?OPTIMISTIC_REPLICATE_CMD, State2, Entries),
     gen_fsm:send_all_state_event(self(), {sync_peer, true}),
     State2.
 
@@ -1168,17 +1238,19 @@ to_all_follower_peer(Cmd, #state{peers = Peers, id = MyID}) ->
         fun
             ({PeerID, _}) when PeerID == MyID ->
                 ok;
-            ({_, P}) ->
+            ({PeerID, P}) ->
                 zraft_peer_proxy:cmd(P, Cmd) end, Peers).
 
 to_all_peer(Cmd, #state{peers = Peers}) ->
     lists:foreach(fun({_, P}) ->
         zraft_peer_proxy:cmd(P, Cmd) end, Peers).
 
+to_peer(_PeerID, _Cmd, #state{peers = []}) ->
+    ok;
 to_peer(PeerID, Cmd, #state{peers = Peers}) ->
     case lists:keyfind(PeerID, 1, Peers) of
         false ->
-            lager:warning("Try update unknown peer ~p", [PeerID]);
+            ?WARNING("Try update unknown peer ~p ~p", [PeerID, Peers]);
         {_, P} ->
             zraft_peer_proxy:cmd(P, Cmd)
     end,
@@ -1189,15 +1261,15 @@ reset_requests(State) ->
     State2 = reset_write_requests(State1),
     reset_conf_request(State2).
 
-reset_conf_request(State=#state{sessions = #sessions{conf = undefined}})->
+reset_conf_request(State = #state{sessions = #sessions{conf = undefined}}) ->
     State;
-reset_conf_request(State=#state{sessions = Sessions,leader = Leader})->
-    reset_request(Sessions#sessions.conf,{leader, Leader}),
+reset_conf_request(State = #state{sessions = Sessions, leader = Leader}) ->
+    reset_request(Sessions#sessions.conf, {leader, Leader}),
     State#state{sessions = Sessions#sessions{conf = undefined}}.
 reset_read_requests(State = #state{sessions = #sessions{read = []}}) ->
     State;
-reset_read_requests(State = #state{sessions =  Sessions, leader = Leader}) ->
-    #sessions{read = Requests}=Sessions,
+reset_read_requests(State = #state{sessions = Sessions, leader = Leader}) ->
+    #sessions{read = Requests} = Sessions,
     lists:foreach(fun({_, Req}) ->
         reset_request(Req, {leader, Leader}) end, Requests),
     State#state{sessions = Sessions#sessions{read = []}}.
@@ -1205,7 +1277,7 @@ reset_read_requests(State = #state{sessions =  Sessions, leader = Leader}) ->
 reset_write_requests(State = #state{sessions = #sessions{write = []}}) ->
     State;
 reset_write_requests(State = #state{sessions = Sessions}) ->
-    #sessions{write = Requests}=Sessions,
+    #sessions{write = Requests} = Sessions,
     lists:foreach(fun({_, Req}) ->
         reset_request(Req, {error, not_leader}) end, Requests),
     State#state{sessions = Sessions#sessions{write = []}}.
@@ -1213,7 +1285,7 @@ reset_write_requests(State = #state{sessions = Sessions}) ->
 apply_read_requests(State = #state{allow_commit = false}) ->
     State;
 apply_read_requests(State = #state{sessions = Sessions}) ->
-    #sessions{read = Requests}=Sessions,
+    #sessions{read = Requests} = Sessions,
     Epoch = quorumMin(State, #peer.epoch),
     Requests1 = apply_read_requests(Epoch, Requests, State),
     State#state{sessions = Sessions#sessions{read = Requests1}}.
@@ -1281,26 +1353,26 @@ get_conf_request(#state{log_state = LogState, config = Conf}, From) ->
             gen_fsm:reply(From, retry)
     end.
 
-accept_conf_request(State=#state{sessions = #sessions{conf = undefined}})->
+accept_conf_request(State = #state{sessions = #sessions{conf = undefined}}) ->
     State;
-accept_conf_request(State=#state{sessions = Sessions,log_state = LogState,config = Config})->
-    #sessions{conf = Req}=Sessions,
+accept_conf_request(State = #state{sessions = Sessions, log_state = LogState, config = Config}) ->
+    #sessions{conf = Req} = Sessions,
     #log_descr{commit_index = Commit} = LogState,
     case check_request_timeout(Req) of
-        true->
+        true ->
             if
-                Config#config.id > Req#conf_change_requet.index andalso Commit >= Config#config.id->
-                    gen_fsm:reply(Req#conf_change_requet.from,ok),
+                Config#config.id > Req#conf_change_requet.index andalso Commit >= Config#config.id ->
+                    gen_fsm:reply(Req#conf_change_requet.from, ok),
                     State#state{sessions = Sessions#sessions{conf = undefined}};
-                true->
+                true ->
                     State
             end;
-        _->
+        _ ->
             State#state{sessions = Sessions#sessions{conf = undefined}}
     end.
 
 accept_write_requests(State = #state{sessions = Sessions, log_state = LogState}) ->
-    #sessions{write = Requests}=Sessions,
+    #sessions{write = Requests} = Sessions,
     #log_descr{commit_index = I} = LogState,
     Requests1 = accept_write_requests(I, Requests),
     State#state{sessions = Sessions#sessions{write = Requests1}}.
@@ -1345,12 +1417,12 @@ send_all_state_event({_, P}, Event) ->
 
 -ifdef(TEST).
 setup_node() ->
-    zraft_util:del_dir(?DATA_DIR),
+    zraft_util:set_test_dir("test-data"),
     net_kernel:start(['zraft_test@localhost', shortnames]),
     ok.
 stop_node(_) ->
     net_kernel:stop(),
-    zraft_util:del_dir(?DATA_DIR),
+    zraft_util:clear_test_dir("test-data"),
     ok.
 
 bootstrap_test_() ->
@@ -1369,8 +1441,8 @@ bootstrap() ->
     {"bootstrap", fun() ->
         Peer = {test, node()},
         {ok, load, InitState} = init([Peer, zraft_dict_backend]),
-        {next_state,follower,State}=init_state(InitState#init_state{snapshot_info = #snapshot_info{}}),
-        {next_state, follower, State1} = follower(bootstrap,{self(),make_ref()}, State),
+        {next_state, follower, State} = init_state(InitState#init_state{snapshot_info = #snapshot_info{}}),
+        {next_state, follower, State1} = follower(bootstrap, {self(), make_ref()}, State),
         ?assertEqual(1, State1#state.current_term),
         Entries = zraft_fs_log:get_entries(State1#state.log, 1, 1),
         ?assertMatch([#enrty{term = 1, index = 1, type = ?OP_CONFIG, data = #pconf{old_peers = [Peer]}}],
@@ -1384,290 +1456,5 @@ bootstrap() ->
         Entries1 = zraft_fs_log:get_entries(State1#state.log, 2, 2),
         ?assertMatch([#enrty{term = 2, index = 2, type = ?OP_NOOP}], Entries1)
     end}.
-
-progress_test_() ->
-    {
-        setup,
-        fun setup_node/0,
-        fun stop_node/1,
-        fun(_X) ->
-            [
-                progress()
-            ]
-        end
-    }.
-progress() ->
-    {"progress", fun() ->
-        PeerName = {test, node()},
-        {ok, Peer} = start_link(PeerName, zraft_dict_backend),
-        initial_bootstrap(Peer),
-        true = force_timeout(Peer),
-        Res1 = sys:get_state(Peer),
-        ?assertMatch({leader, #state{current_term = 2}}, Res1),
-        {_, State1} = Res1,
-        ?assertMatch(#log_descr{commit_index = 2, first_index = 1, last_index = 2, last_term = 2},
-            State1#state.log_state),
-        Ref = make_ref(),
-        Peer1 = {test1, {Ref, self()}},
-        Peer2 = {test2, {Ref, self()}},
-        %%set new config
-        NewConfEntry = #enrty{term = 2, index = 3, type = ?OP_CONFIG, data = #pconf{old_peers = [PeerName],
-            new_peers = ordsets:from_list([PeerName, Peer1, Peer2])}},
-        ok = append_test(Peer, [NewConfEntry]),
-        Res2 = sys:get_state(Peer),
-        %% must ve un transitional state
-        ?assertMatch(
-            {
-                leader,
-                #state{current_term = 2, config = #config{state = ?TRANSITIONAL_CONF, old_peers = [PeerName],
-                    new_peers = [PeerName, Peer1, Peer2]}}},
-            Res2
-        ),
-        %%check hearbeat
-        Command1_1 = check_progress(Peer1),
-        ?assertMatch(
-            #append_entries{commit_index = 2, term = 2, entries = [], prev_log_index = 3, prev_log_term = 2},
-            Command1_1
-        ),
-        Command2_1 = check_progress(Peer2),
-        ?assertMatch(
-            #append_entries{commit_index = 2, term = 2, entries = [], prev_log_index = 3, prev_log_term = 2},
-            Command2_1
-        ),
-        %%reject hearbeat, our log out of date
-        Reply1 = #append_reply{success = false, term = 2, last_index = 0, agree_index = 0},
-        fake_reply(Command1_1, Reply1, Peer1),
-        fake_reply(Command2_1, Reply1, Peer2),
-        Command1_2 = check_progress(Peer1),
-        ?assertMatch(
-            #append_entries{commit_index = 2, term = 2, entries = [], prev_log_index = 0, prev_log_term = 0},
-            Command1_2
-        ),
-        Command2_2 = check_progress(Peer2),
-        ?assertMatch(
-            #append_entries{commit_index = 2, term = 2, entries = [], prev_log_index = 0, prev_log_term = 0},
-            Command2_2
-        ),
-        %%accept new hearbeat
-        Reply2 = #append_reply{success = true, term = 2, last_index = 0, agree_index = 0},
-        fake_reply(Command1_2, Reply2, Peer1),
-        fake_reply(Command2_2, Reply2, Peer2),
-        Command1_3 = check_progress(Peer1),
-        ?assertMatch(
-            #append_entries{commit_index = 2, term = 2, prev_log_index = 0, prev_log_term = 0},
-            Command1_3
-        ),
-        Command2_3 = check_progress(Peer2),
-        ?assertMatch(
-            #append_entries{commit_index = 2, term = 2, prev_log_index = 0, prev_log_term = 0},
-            Command2_3
-        ),
-        %%must receive prev log
-        ?assertMatch(
-            [
-                #enrty{index = 1, term = 1, type = ?OP_CONFIG, data = #pconf{}},
-                #enrty{index = 2, term = 2, type = ?OP_NOOP},
-                #enrty{index = 3, term = 2, type = ?OP_CONFIG, data = #pconf{}}
-            ],
-            Command1_3#append_entries.entries
-        ),
-        ?assertMatch(
-            [
-                #enrty{index = 1, term = 1, type = ?OP_CONFIG, data = #pconf{}},
-                #enrty{index = 2, term = 2, type = ?OP_NOOP},
-                #enrty{index = 3, term = 2, type = ?OP_CONFIG, data = #pconf{}}
-            ],
-            Command2_3#append_entries.entries
-        ),
-        %%replication ok
-        Reply3 = #append_reply{success = true, term = 2, last_index = 3, agree_index = 3},
-        fake_reply(Command1_3, Reply3, Peer1),
-        fake_reply(Command2_3, Reply3, Peer2),
-        Command1_4 = check_progress(Peer1),
-        %%check commit message
-        ?assertMatch(
-            #append_entries{commit_index = 3, term = 2, prev_log_index = 3, prev_log_term = 2, entries = []},
-            Command1_4
-        ),
-        Command2_4 = check_progress(Peer2),
-        ?assertMatch(
-            #append_entries{commit_index = 3, term = 2, prev_log_index = 3, prev_log_term = 2, entries = []},
-            Command2_4
-        ),
-        Reply4 = #append_reply{success = true, term = 2, last_index = 3, agree_index = 3},
-        fake_reply(Command1_4, Reply4, Peer1),
-        fake_reply(Command2_4, Reply4, Peer2),
-        Command1_5 = check_progress(Peer1),
-        %%check new conf
-        ?assertMatch(
-            #append_entries{commit_index = 3, term = 2, prev_log_index = 3, prev_log_term = 2,
-                entries = [#enrty{index = 4, type = ?OP_CONFIG, term = 2}]},
-            Command1_5
-        ),
-        Command2_5 = check_progress(Peer2),
-        ?assertMatch(
-            #append_entries{commit_index = 3, term = 2, prev_log_index = 3, prev_log_term = 2,
-                entries = [#enrty{index = 4, type = ?OP_CONFIG, term = 2}]},
-            Command2_5
-        ),
-        Res3 = sys:get_state(Peer),
-        ?assertMatch(
-            {
-                leader,
-                #state{current_term = 2, config = #config{state = ?STABLE_CONF, old_peers = [PeerName, Peer1, Peer2]},
-                    log_state = #log_descr{last_index = 4, commit_index = 3, last_term = 2}}
-            },
-            Res3
-        ),
-        Reply5 = #append_reply{success = true, term = 2, last_index = 4, agree_index = 4},
-        fake_reply(Command1_5, Reply5, Peer1),
-        fake_reply(Command2_5, Reply5, Peer2),
-        Command1_6 = check_progress(Peer1),
-        %%check new conf commit
-        ?assertMatch(
-            #append_entries{commit_index = 4, term = 2, prev_log_index = 4, prev_log_term = 2,
-                entries = []},
-            Command1_6
-        ),
-        Command2_6 = check_progress(Peer2),
-        ?assertMatch(
-            #append_entries{commit_index = 4, term = 2, prev_log_index = 4, prev_log_term = 2,
-                entries = []},
-            Command2_6
-        ),
-        %%accept commit new conf
-        Reply6 = #append_reply{success = true, term = 2, last_index = 4, agree_index = 4},
-        fake_reply(Command1_6, Reply6, Peer1),
-        fake_reply(Command2_6, Reply6, Peer2),
-
-        Res4 = sys:get_state(Peer),
-        ?assertMatch(
-            {
-                leader,
-                #state{current_term = 2, config = #config{state = ?STABLE_CONF},
-                    log_state = #log_descr{last_index = 4, commit_index = 4, last_term = 2}}
-            },
-            Res4),
-        %%peer1 new leader
-        VoteReq = #vote_request{term = 3, from = Peer1, last_index = 3, last_term = 2},
-        ok = zraft_peer_route:cmd(PeerName, VoteReq),
-        Command1_7 = check_progress(Peer1),
-        %%leader must reject hearbeat
-        ?assertMatch(
-            #vote_reply{commit = 4, granted = false, peer_term = 2, request_term = 3},
-            Command1_7
-        ),
-        Ref1 = ref1,
-        NewLeaderHearbeat =
-            #append_entries{
-                prev_log_term = 2,
-                prev_log_index = 4,
-                entries = [],
-                commit_index = 4,
-                request_ref = Ref1,
-                from = Peer1,
-                term = 3
-            },
-        ok = zraft_peer_route:cmd(PeerName, NewLeaderHearbeat),
-        Command1_8 = check_progress(Peer1),
-        ?assertMatch(
-            #append_reply{last_index = 4, agree_index = 4, request_ref = ref1, success = true, term = 3},
-            Command1_8
-        ),
-        %%start new election
-        true = force_timeout(Peer),
-        Command1_9 = check_progress(Peer1),
-        ?assertMatch(
-            #vote_request{last_term = 2, last_index = 4, term = 4},
-            Command1_9
-        ),
-        Command2_9 = check_progress(Peer2),
-        ?assertMatch(
-            #vote_request{last_term = 2, last_index = 4, term = 4},
-            Command2_9
-        ),
-        Res5 = sys:get_state(Peer),
-        ?assertMatch(
-            {
-                candidate,
-                #state{current_term = 4, config = #config{state = ?STABLE_CONF, old_peers = [PeerName, Peer1, Peer2]},
-                    log_state = #log_descr{last_index = 4, commit_index = 4, last_term = 2}}
-            },
-            Res5
-        ),
-        %%reject and new election
-        Reply7 = #vote_reply{request_term = 4, granted = false, peer_term = 4, commit = 4},
-        fake_reply(Command1_9, Reply7, Peer1),
-        Reply8 = #vote_reply{request_term = 4, granted = false, peer_term = 5, commit = 4},
-        fake_reply(Command2_9, Reply8, Peer2),
-        true = force_timeout(Peer),
-        Command1_10 = check_progress(Peer1),
-        ?assertMatch(
-            #vote_request{last_term = 2, last_index = 4, term = 6},
-            Command1_10
-        ),
-        Command2_10 = check_progress(Peer2),
-        ?assertMatch(
-            #vote_request{last_term = 2, last_index = 4, term = 6},
-            Command2_10
-        ),
-        Reply9 = #vote_reply{request_term = 6, granted = true, peer_term = 5, commit = 4},
-        fake_reply(Command1_10, Reply9, Peer1),
-        fake_reply(Command2_10, Reply9, Peer2),
-        Res6 = sys:get_state(Peer),
-        ?assertMatch(
-            {
-                leader,
-                #state{current_term = 6, config = #config{state = ?STABLE_CONF, old_peers = [PeerName, Peer1, Peer2]},
-                    log_state = #log_descr{last_index = 5, commit_index = 4, last_term = 6}}
-            },
-            Res6
-        ),
-        Command1_11 = check_progress(Peer1),
-        ?assertMatch(
-            #append_entries{commit_index = 4, prev_log_index = 4, prev_log_term = 2, entries = [], term = 6},
-            Command1_11
-        ),
-        Command2_11 = check_progress(Peer2),
-        ?assertMatch(
-            #append_entries{commit_index = 4, prev_log_index = 4, prev_log_term = 2, entries = [], term = 6},
-            Command2_11
-        ),
-        Reply10 = #append_reply{success = true, term = 6, last_index = 4, agree_index = 4},
-        fake_reply(Command1_11, Reply10, Peer1),
-        fake_reply(Command2_11, Reply10, Peer2),
-        Command1_12 = check_progress(Peer1),
-        ?assertMatch(
-            #append_entries{commit_index = 4, prev_log_index = 4, prev_log_term = 2, term = 6,
-                entries = [#enrty{index = 5, type = ?OP_NOOP, term = 6}]},
-            Command1_12
-        ),
-        Command2_12 = check_progress(Peer2),
-        ?assertMatch(
-            #append_entries{commit_index = 4, prev_log_index = 4, prev_log_term = 2, term = 6,
-                entries = [#enrty{index = 5, type = ?OP_NOOP, term = 6}]},
-            Command2_12
-        ),
-        ok = stop(PeerName)
-    end}.
-
-check_progress(Peer) ->
-    receive
-        {Peer, V} ->
-            V
-    after 2000 ->
-        {error, timeout}
-    end.
-
-fake_reply(Command = #append_entries{}, Reply, Peer) ->
-    zraft_peer_route:reply_proxy(
-        Command#append_entries.from,
-        Reply#append_reply{from_peer = Peer, request_ref = Command#append_entries.request_ref}
-    );
-fake_reply(Command = #vote_request{}, Reply, Peer) ->
-    zraft_peer_route:reply_consensus(
-        Command#vote_request.from,
-        Reply#vote_reply{from_peer = Peer}
-    ).
 
 -endif.

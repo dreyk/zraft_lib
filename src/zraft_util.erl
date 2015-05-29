@@ -35,7 +35,9 @@
     miscrosec_timeout/1,
     gen_server_cancel_timer/1,
     gen_server_cast_after/2,
-    peer_id/1]).
+    peer_id/1,
+    set_test_dir/1,
+    clear_test_dir/1]).
 
 peer_name({Name,Node}) when is_atom(Name)->
     atom_to_list(Name)++"-"++node_name(Node);
@@ -79,6 +81,10 @@ del_dir(Dir) ->
             file:del_dir(Dir)
     end.
 
+make_dir(undefined)->
+    exit({error,dir_undefined});
+make_dir("undefined"++_)->
+    exit({error,dir_undefined});
 make_dir(Dir) ->
     case make_safe(Dir) of
         ok ->
@@ -136,3 +142,13 @@ gen_server_cancel_timer(Ref)->
 -spec peer_id(zraft_consensus:from_peer_addr())->zraft_consensus:peer_id().
 peer_id({ID,_})->
     ID.
+
+set_test_dir(Dir)->
+    del_dir(Dir),
+    ok = make_dir(Dir),
+    application:set_env(zraft_lib,log_dir,Dir),
+    application:set_env(zraft_lib,snapshot_dir,Dir).
+clear_test_dir(Dir)->
+    application:unset_env(zraft_lib,log_dir),
+    application:unset_env(zraft_lib,snapshot_dir),
+    del_dir(Dir).
