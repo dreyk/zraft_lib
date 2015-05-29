@@ -1,0 +1,10 @@
+.eunit
+deps
+*.o
+*.beam
+*.plt
+ebin
+.project
+.settings
+doc
+*.iml

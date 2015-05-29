@@ -1,0 +1,51 @@
+%% -------------------------------------------------------------------
+%% @author Gunin Alexander <guninalexander@gmail.com>
+%% Copyright (c) 2015 Gunin Alexander.  All Rights Reserved.
+%%
+%% This file is provided to you under the Apache License,
+%% Version 2.0 (the "License"); you may not use this file
+%% except in compliance with the License.  You may obtain
+%% a copy of the License at
+%%
+%%   http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing,
+%% software distributed under the License is distributed on an
+%% "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+%% KIND, either express or implied.  See the License for the
+%% specific language governing permissions and limitations
+%% under the License.
+%%
+%% -------------------------------------------------------------------
+-module(zraft_backend).
+-author("dreyk").
+
+%% API
+-export([]).
+
+-type state() :: term().
+-type read_cmd()::term().
+-type write_cmd()::term().
+-type snapshot_fun()::fun().
+
+
+%% @doc init backend FSM
+-callback init(zraft_consensus:peer_id()) -> state().
+
+%% @doc read/query data from FSM
+-callback query(read_cmd(),state()) -> {ok,term()}.
+
+%% @doc write data to FSM
+-callback apply_data([write_cmd()],state()) -> {ok,state()}.
+
+%% @doc Prepare FSM to take snapshot asycn if it's possible otherwice return function to take snapshot immediatly
+-callback snapshot(state())->{sync,snapshot_fun()} | {async,snapshot_fun()}.
+
+%% @doc Notify that snapshot has done.
+-callback snapshot_done(state())->{ok,state()}.
+
+%% @doc Notify that snapshot has failed.
+-callback snapshot_failed(Reason::term(),state())->{ok,state()}.
+
+%% @doc Read data from snapshot file or directiory.
+-callback install_snapshot(file:filename(),state())->{ok,state()}.
