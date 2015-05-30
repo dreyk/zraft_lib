@@ -46,12 +46,10 @@
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
--define(MAX_COUNT, 10).
--define(SNAPSHOT_BACKUP, true).
--else.
+-endif.
+
 -define(MAX_COUNT, zraft_util:get_env(max_log_count, 1000)).
 -define(SNAPSHOT_BACKUP, zraft_util:get_env(snapshot_backup, false)).
--endif.
 
 
 -record(state, {
@@ -470,9 +468,13 @@ truncate_log(Raft,SnapshotInfo)->
 
 -ifdef(TEST).
 setup() ->
+    application:set_env(zraft_lib,max_log_count,10),
+    application:set_env(zraft_lib,snapshot_backup,true),
     zraft_util:set_test_dir("test-snapshot"),
     ok.
 clear_setup(_) ->
+    application:unset_env(zraft_lib,max_log_count),
+    application:unset_env(zraft_lib,snapshot_backup),
     zraft_util:clear_test_dir("test-snapshot"),
     ok.
 

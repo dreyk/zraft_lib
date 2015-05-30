@@ -90,7 +90,7 @@ start_link(Raft, PeerID, BackEnd) ->
 init([Raft, PeerID, BackEnd]) ->
     ID = zraft_util:peer_id(Raft),
     gen_server:cast(self(), start_peer),
-    ReqTimeout = zraft_consensus:get_election_timeout() * 2,
+    ReqTimeout = zraft_consensus:get_election_timeout()*2,
     {ok, #state{id = ID, raft = Raft, back_end = BackEnd, peer = #peer{id = PeerID}, request_timeout = ReqTimeout}}.
 
 handle_call(force_hearbeat_timeout, _, State = #state{hearbeat_timer = Timer}) ->

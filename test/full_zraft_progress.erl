@@ -110,7 +110,7 @@ progress() ->
             },
             Res4
         ),
-        wait_new_config(4,PeerID1,1),
+        ok = wait_new_config(4,PeerID1,1),
         Res5 = zraft_consensus:stat(Peer2),
         ?assertMatch(
             #peer_start{
@@ -131,8 +131,21 @@ progress() ->
             },
             Res6
         ),
-        ok = zraft_consensus:stop(Peer1),
+        W1 = zraft_consensus:write(PeerID2,{1,"1"},?TIMEOUT),
+        ?assertMatch({leader,{test1,_}},W1),
+        W2 = zraft_consensus:write(PeerID1,{1,"1"},?TIMEOUT),
+        ?assertMatch(ok,W2),
+        ok = wait_success_read(1,PeerID1,1),
+
+        %%drop test2 peer and all it's data
         ok = zraft_consensus:stop(Peer2),
+        ok = zraft_util:del_dir("test-data/test2-zraft_test_localhost"),
+        %%restart it this empty state
+        {ok, Peer22} = zraft_consensus:start_link(PeerID2, zraft_dict_backend),
+        %%wait log replicate
+        ok = wait_follower_sync(5,5,2,PeerID2,Peer22,1),
+        ok = zraft_consensus:stop(Peer1),
+        ok = zraft_consensus:stop(Peer22),
         ok = zraft_consensus:stop(Peer3)
     end}.
 
@@ -144,5 +157,31 @@ wait_new_config(Index,PeerID,Attempt)->
             ?debugFmt("Wait config attempt - ~p",[Attempt]),
             wait_new_config(Index,PeerID,Attempt+1)
     end.
+
+wait_success_read(Key,PeerID,Attempt)->
+    case  zraft_consensus:query(PeerID,Key,?TIMEOUT) of
+        {ok,_}->
+            ok;
+        _->
+            ?debugFmt("Wait read attempt - ~p",[Attempt]),
+            wait_success_read(Key,PeerID,Attempt+1)
+    end.
+
+wait_follower_sync(CommitIndex,LastIndex,Term,PeerID,Peer,Attempt)->
+    case zraft_consensus:stat(Peer) of
+        #peer_start{term = Term,state_name = follower,log_state = #log_descr{last_index = LastIndex,commit_index = CommitIndex}}->
+            ?debugFmt("Wait start ~p current state[term:~p,last-index:~p,commit:~p,state:~p] attempt - ~p",
+                [PeerID,Term,LastIndex,CommitIndex,foolower,finished]),
+            ok;
+        #peer_start{term = T1,state_name = StateName,log_state = #log_descr{last_index = L1,commit_index = C1}}->
+            ?debugFmt("Wait start ~p current state[term:~p,last-index:~p,commit:~p,state:~p] attempt - ~p",
+                [PeerID,T1,L1,C1,StateName,Attempt]),
+            timer:sleep(100),
+            wait_follower_sync(CommitIndex,LastIndex,Term,PeerID,Peer,Attempt+1);
+        _->
+            ?debugFmt("Wait start ~p attempt - ~p",[PeerID,Attempt]),
+            wait_follower_sync(CommitIndex,LastIndex,Term,PeerID,Peer,Attempt+1)
+    end.
+
 
 -endif.

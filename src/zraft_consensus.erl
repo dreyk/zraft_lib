@@ -462,6 +462,19 @@ handle_event({sync_peer, _MayBeCommit}, StateName, State) ->
 handle_event(_Event, StateName, State) ->
     {next_state, StateName, State}.
 
+handle_sync_event(stat, _From, load, State) ->
+    S1 = #peer_start{
+        state_name = load,
+        agree_index = 0,
+        allow_commit = false,
+        conf = ?BLANK_CONF,
+        conf_state = ?STABLE_CONF,
+        epoch = 0,
+        proxy_peer_stats = [],
+        snapshot_info = #snapshot_info{},
+        log_state = #log_descr{}
+    },
+    {reply,S1,load,State};
 handle_sync_event(stat, _From, StateName, State) ->
     #state{
         epoch = E,
