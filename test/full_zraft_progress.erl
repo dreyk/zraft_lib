@@ -110,6 +110,7 @@ progress() ->
             },
             Res4
         ),
+        wait_new_config(4,PeerID1,1),
         Res5 = zraft_consensus:stat(Peer2),
         ?assertMatch(
             #peer_start{
@@ -135,5 +136,13 @@ progress() ->
         ok = zraft_consensus:stop(Peer3)
     end}.
 
+wait_new_config(Index,PeerID,Attempt)->
+    case  zraft_consensus:get_conf(PeerID,?TIMEOUT) of
+        {ok,{Index,_}}->
+            ok;
+        _->
+            ?debugFmt("Wait config attempt - ~p",[Attempt]),
+            wait_new_config(Index,PeerID,Attempt+1)
+    end.
 
 -endif.

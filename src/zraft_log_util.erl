@@ -23,12 +23,13 @@
 -include_lib("zraft_lib/include/zraft.hrl").
 
 -export([
-    append_request/5
+    append_request/6
 ]).
 
-append_request(CurentTerm,CommitIndex,PrevIndex, PrevTerm,Entries) ->
+append_request(Epoch,CurentTerm,CommitIndex,PrevIndex, PrevTerm,Entries) ->
     Commit = min(CommitIndex, PrevIndex + length(Entries)),
     #append_entries{
+        epoch = Epoch,
         term = CurentTerm,
         entries = Entries,
         prev_log_index = PrevIndex,

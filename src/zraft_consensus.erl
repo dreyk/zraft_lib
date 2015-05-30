@@ -84,6 +84,8 @@
 -define(WARNING(S), ?debugMsg("[WARNING] " ++ S)).
 -define(ERROR(S, As), ?debugFmt("[ERROR] " ++ S, As)).
 -define(ERROR(S), ?debugMsg("[ERROR] " ++ S)).
+-define(DEBUG(S, As), ?debugFmt("[DEBUG] " ++ S, As)).
+-define(DEBUH(S), ?debugMsg("[DEBUG] " ++ S)).
 -else.
 -define(INFO(S, As), lager:info(S, As)).
 -define(INFO(S), lager:info(S)).
@@ -91,6 +93,8 @@
 -define(WARNING(S), lager:warning(S)).
 -define(ERROR(S, As), lager:error(S, As)).
 -define(ERROR(S), lager:error(S)).
+-define(ERROR(S, As), lager:debug(S, As)).
+-define(ERROR(S), lager:debug(S)).
 -endif.
 
 -define(ETIMEOUT, zraft_util:get_env(?ELECTION_TIMEOUT_PARAM, ?ELECTION_TIMEOUT)).
@@ -232,7 +236,6 @@ init([PeerID, BackEnd]) ->
     {ok, load, #init_state{fsm = FSM, log = Log, back_end = BackEnd, id = PeerID}}.
 
 init_state(InitState) ->
-    ?INFO("init state"),
     #init_state{
         id = PeerID,
         fsm = FSM,
@@ -240,6 +243,7 @@ init_state(InitState) ->
         back_end = BackEnd,
         snapshot_info = Info
     } = InitState,
+    ?INFO("~p: Init state",[PeerID]),
     Meta = zraft_fs_log:get_raft_meta(Log),
     case maybe_set_back_end(BackEnd, Meta, Log) of
         {error, Error} ->
@@ -258,7 +262,7 @@ init_state(InitState) ->
                 snapshot_info = Info,
                 election_timeout = ?ETIMEOUT
             },
-            State2 = set_config(follower,ConfDescr, State1),
+            State2 = set_config(follower, ConfDescr, State1),
             State3 = start_timer(State2),
             case InitState#init_state.bootstrap of
                 false ->
@@ -436,7 +440,7 @@ handle_event(Info = #snapshot_info{}, StateName, State = #state{log = Log}) ->
     case zraft_fs_log:sync_fs(Async) of
         #log_op_result{result = ok, last_conf = NewConf, log_state = LogState} ->
             State1 = State#state{log_state = LogState, snapshot_info = Info},
-            State2 = set_config(StateName,NewConf, State1),
+            State2 = set_config(StateName, NewConf, State1),
             {next_state, StateName, State2};
         #log_op_result{result = Error} ->
             ?ERROR("~p: Fail truncate log ~p", [State#state.id, Error]),
@@ -506,6 +510,7 @@ handle_sync_event(Req = #read_request{args = Args}, From, leader,
     Req1 = Req#read_request{args = [From | Args]},
     Requests1 = [{Epoch1, Req1} | Requests],
     State1 = State#state{epoch = Epoch1, sessions = Sessions#sessions{read = Requests1}},
+    ok = update_peer_last_index(State1),
     replicate_peer_request(?OPTIMISTIC_REPLICATE_CMD, State1, []),
     gen_fsm:send_all_state_event(self(), {sync_peer, false}),
     {next_state, leader, State1};
@@ -574,17 +579,17 @@ handle_info({Async, Res}, load, InitState = #init_state{async = Async}) ->
 handle_info(_Info, StateName, State) ->
     {next_state, StateName, State}.
 
-terminate(_Reason,_,ok)->
+terminate(_Reason, _, ok) ->
     ok;
 terminate(_Reason, load, #init_state{log = Log, fsm = FSM}) ->
     ok = zraft_fsm:stop(FSM),
     ok = zraft_fs_log:stop(Log),
     ok;
-terminate(_Reason, _StateName,State) ->
+terminate(_Reason, _StateName, State) ->
     %%stop all subprocess
     reset_subprocess(State).
 
-reset_subprocess(State=#state{log = Log, state_fsm = FSM})->
+reset_subprocess(State = #state{log = Log, state_fsm = FSM}) ->
     stop_all_peer(State),
     ok = zraft_fsm:stop(FSM),
     ok = zraft_fs_log:stop(Log),
@@ -600,12 +605,14 @@ make_snapshot_info(StateName, From, Index, State = #state{log = Log}) ->
 
 %%Try commit
 maybe_commit_quorum(State) ->
-    #state{log_state = LogDescr, log = Log, current_term = CurrentTerm} = State,
+    #state{log_state = LogDescr, log = Log, current_term = CurrentTerm, epoch = Epoch} = State,
     AgreeIndex = quorumMin(State, #peer.last_agree_index),
     if
         AgreeIndex =< LogDescr#log_descr.commit_index ->
+            %%may be need send reply for read requests.
+            State1 = apply_read_requests(State),
             %%already commited
-            {next_state, leader, State};
+            {next_state, leader, State1};
         AgreeIndex < LogDescr#log_descr.first_index ->
             {stop, {error, commit_collision}, State};
         true ->
@@ -629,7 +636,7 @@ maybe_commit_quorum(State) ->
                     State4 = accept_conf_request(State3),
                     %%Commit followers
                     OptimisticReplication =
-                        zraft_log_util:append_request(CurrentTerm, AgreeIndex, PrevIndex, PrevTerm, []),
+                        zraft_log_util:append_request(Epoch, CurrentTerm, AgreeIndex, PrevIndex, PrevTerm, []),
                     to_all_follower_peer({?OPTIMISTIC_REPLICATE_CMD, OptimisticReplication}, State4),
                     %%Check if new config has been commited
                     maybe_change_config(State4)
@@ -675,11 +682,11 @@ maybe_change_config(State = #state{config = Config, log_state = LogState}) ->
     end.
 
 replicate_peer_request(Type, State, Entries) ->
-    #state{current_term = Term, log_state = LogDescr} = State,
+    #state{current_term = Term, log_state = LogDescr, epoch = Epoch} = State,
     #log_descr{last_index = LastIndex, last_term = LastTerm, commit_index = Commit} = LogDescr,
-    HearBeat = zraft_log_util:append_request(Term, Commit, LastIndex, LastTerm, Entries),
+    HearBeat = zraft_log_util:append_request(Epoch, Term, Commit, LastIndex, LastTerm, Entries),
     to_all_follower_peer({Type, HearBeat}, State),
-    update_peer_last_index(State).
+    State.
 
 %%StateName==candidate or follower(leader are rejecting all vote request)
 handle_vote_reuqest(StateName, Req, State) ->
@@ -880,7 +887,7 @@ append_entries(Req, State = #state{log = Log, current_term = Term, id = PeerID})
     case Result of
         {true, _LastIndex, ToCommit} ->
             zraft_fsm:apply_commit(State2#state.state_fsm, ToCommit),
-            State3 = set_config(follower,NewConf, State2),
+            State3 = set_config(follower, NewConf, State2),
             Reply1 = Reply#append_reply{success = true};
         {false, _} ->
             State3 = State2,
@@ -1020,17 +1027,17 @@ set_config(_StateName, ?BLANK_CONF, State) ->
 set_config(_StateName, PConf, State = #state{config = #config{conf = PConf}}) ->
     State;
 set_config(StateName, {ConfID, #pconf{old_peers = Old, new_peers = New}} = PConf,
-    State = #state{current_term = Term, back_end = BackEnd, id = PeerID, peers = OldPeers, log_state = LogState}) ->
+    State = #state{log_state = LogState, id = PeerID, back_end = BackEnd, peers = OldPeers}) ->
     NewPeersSet = ordsets:union([[PeerID], Old, New]),
     #log_descr{last_index = LastIndex, last_term = LastTerm, commit_index = Commit} = LogState,
     HearBeat = if
                    StateName == leader ->
-                       zraft_log_util:append_request(Term, Commit, LastIndex, LastTerm, []);
+                       #state{epoch = Epoch, current_term = Term} = State,
+                       zraft_log_util:append_request(Epoch, Term, Commit, LastIndex, LastTerm, []);
                    true ->
                        undefined
                end,
     NewPeers = join_peers({peer(PeerID), BackEnd, HearBeat}, NewPeersSet, OldPeers, []),
-    ?INFO("New Peers ~p", [NewPeers]),
     ConfState = case New of
                     [] ->
                         ?STABLE_CONF;
@@ -1173,7 +1180,7 @@ append(Entries, State = #state{log = Log}) ->
     Async = zraft_fs_log:append_leader(Log, Entries),
     #log_op_result{log_state = LogState1, last_conf = NewConf, result = ok} = zraft_fs_log:sync_fs(Async),
     State1 = State#state{log_state = LogState1},
-    State2 = set_config(leader,NewConf, State1),
+    State2 = set_config(leader, NewConf, State1),
     ok = update_peer_last_index(State2),
     replicate_peer_request(?OPTIMISTIC_REPLICATE_CMD, State2, Entries),
     gen_fsm:send_all_state_event(self(), {sync_peer, true}),
@@ -1238,7 +1245,7 @@ to_all_follower_peer(Cmd, #state{peers = Peers, id = MyID}) ->
         fun
             ({PeerID, _}) when PeerID == MyID ->
                 ok;
-            ({PeerID, P}) ->
+            ({_PeerID, P}) ->
                 zraft_peer_proxy:cmd(P, Cmd) end, Peers).
 
 to_all_peer(Cmd, #state{peers = Peers}) ->

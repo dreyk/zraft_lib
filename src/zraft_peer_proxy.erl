@@ -23,6 +23,19 @@
 -include_lib("zraft_lib/include/zraft.hrl").
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
+-define(INFO(S, As), ?debugFmt("[INFO] " ++ S, As)).
+-define(INFO(S), ?debugMsg("[INFO] " ++ S)).
+-define(WARNING(S, As), ?debugFmt("[WARNING] " ++ S, As)).
+-define(WARNING(S), ?debugMsg("[WARNING] " ++ S)).
+-define(ERROR(S, As), ?debugFmt("[ERROR] " ++ S, As)).
+-define(ERROR(S), ?debugMsg("[ERROR] " ++ S)).
+-else.
+-define(INFO(S, As), lager:info(S, As)).
+-define(INFO(S), lager:info(S)).
+-define(WARNING(S, As), lager:warning(S, As)).
+-define(WARNING(S), lager:warning(S)).
+-define(ERROR(S, As), lager:error(S, As)).
+-define(ERROR(S), lager:error(S)).
 -endif.
 
 -behaviour(gen_server).
