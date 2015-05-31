@@ -325,11 +325,11 @@ prepare_install_snapshot(Req, State = #state{dir = Dir, snapshot_count = SN, raf
         type = copy},
     {noreply, State1#state{snapshot_count = SN + 1, active_snapshot = Snapshoter}}.
 
-install_answer({PeerID, _}, #install_snapshot{epoch = E, term = T, request_ref = Ref, index = I}) ->
+install_answer(Raft,#install_snapshot{epoch = E, term = T, request_ref = Ref, index = I}) ->
     #install_snapshot_reply{
         epoch = E,
         request_ref = Ref,
-        from_peer = PeerID,
+        from_peer = Raft,
         term = T,
         index = I,
         result = failed

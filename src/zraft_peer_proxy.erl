@@ -50,6 +50,7 @@
 -record(snapshot_progress, {snapshot_dir, process, mref, index}).
 -record(state, {
     peer,
+    remote_peer_id,
     raft,
     request_timer,
     hearbeat_timer,
@@ -81,6 +82,13 @@ start_link(Raft, PeerID, BackEnd) ->
 
 init([Raft, PeerID, BackEnd]) ->
     gen_server:cast(self(), start_peer),
+    %%brodcast up message. To prevent restarted peer become leader. ReqTimeout is double election timeout
+    case Raft of
+        {PeerID,_}->
+            ok;
+        _->
+            zraft_peer_route:cmd(PeerID,{peer_up,Raft})
+    end,
     ReqTimeout = zraft_consensus:get_election_timeout()*2,
     {ok, #state{raft = Raft, back_end = BackEnd, peer = #peer{id = PeerID}, request_timeout = ReqTimeout}}.
 
@@ -114,6 +122,20 @@ handle_cast(start_peer, State) ->
     maybe_start_remote(State),
     {noreply, State};
 
+handle_cast({peer_up,From},State=#state{request_ref = Ref})->
+    %%Need to prevent restarted peer try become leader. ReqTimeout is double election timeout
+    if
+        State#state.remote_peer_id==From->
+            {noreply,State};
+        Ref == undefined->
+            %%remote peer has been restarted
+            %%no active request jsut set new pid
+            {noreply,State#state{remote_peer_id = From}};
+        true->
+            %%remote peer has been restarted
+            %%send new requests
+            progress(State#state{remote_peer_id = From})
+    end;
 handle_cast(?LOST_LEADERSHIP_CMD,
     State = #state{peer = Peer}) ->
     State1 = reset_timers(true, State),
@@ -186,9 +208,9 @@ handle_cast({?OPTIMISTIC_REPLICATE_CMD, Req}, State) ->%%snapshot are being copi
     State2 = install_snapshot_hearbeat(hearbeat, State1),
     {noreply, State2};
 
-handle_cast(#append_reply{epoch = Epoch, success = true, agree_index = Index, request_ref = RF},
+handle_cast(#append_reply{from_peer = From,epoch = Epoch, success = true, agree_index = Index, request_ref = RF},
     State = #state{force_request = FR, request_ref = RF}) ->
-    State1 = update_peer(true, Index, Index + 1, Epoch, State),
+    State1 = update_peer(true, Index, Index + 1, Epoch,From,State),
     State2 = reset_timers(true, State1),
     State3 = if
                  FR ->
@@ -207,12 +229,12 @@ handle_cast(#append_reply{term = PeerTerm},
     State1 = reset_timers(true, State),
     {noreply, State1};
 
-handle_cast(#append_reply{request_ref = RF, last_index = LastIndex, epoch = Epoch},
+handle_cast(#append_reply{from_peer = From,request_ref = RF, last_index = LastIndex, epoch = Epoch},
     State = #state{peer = Peer, request_ref = RF}) ->
     ?WARNING(State,"Peer out of date"),
     DecNext = Peer#peer.next_index - 1,
     NextIndex = max(1, min(LastIndex, DecNext)),
-    State1 = update_peer(NextIndex, Epoch, State),
+    State1 = update_peer(NextIndex, Epoch,From, State),
     progress(State1);
 
 handle_cast(#append_reply{}, State) ->%%Out of date responce
@@ -231,9 +253,9 @@ handle_cast(#install_snapshot{}, State) ->%%Out of date responce
     %%close all opened files
     {noreply, State};
 
-handle_cast(Resp = #install_snapshot_reply{result = start, request_ref = RF, epoch = Epoch},
+handle_cast(Resp = #install_snapshot_reply{from_peer = From,result = start, request_ref = RF, epoch = Epoch},
     State = #state{request_ref = RF, force_request = FR}) ->
-    State1 = update_peer(Epoch, State),
+    State1 = update_peer(Epoch,From, State),
     State2 = reset_timers(true, State1),
     State3 = start_copy_snapshot(Resp, State2),
     State4 = if
@@ -243,9 +265,9 @@ handle_cast(Resp = #install_snapshot_reply{result = start, request_ref = RF, epo
                      start_hearbeat_timer(State3)
              end,
     {noreply, State4};
-handle_cast(#install_snapshot_reply{result = hearbeat, request_ref = RF, epoch = Epoch},
+handle_cast(#install_snapshot_reply{from_peer = From,result = hearbeat, request_ref = RF, epoch = Epoch},
     State = #state{request_ref = RF, force_request = FR}) ->
-    State1 = update_peer(Epoch, State),
+    State1 = update_peer(Epoch,From, State),
     State2 = reset_timers(true, State1),
     State3 = if
                  FR ->
@@ -254,9 +276,9 @@ handle_cast(#install_snapshot_reply{result = hearbeat, request_ref = RF, epoch =
                      start_hearbeat_timer(State2)
              end,
     {noreply, State3};
-handle_cast(#install_snapshot_reply{index = Index, result = finish, request_ref = RF, epoch = Epoch},
+handle_cast(#install_snapshot_reply{index = Index,from_peer = From, result = finish, request_ref = RF, epoch = Epoch},
     State = #state{request_ref = RF}) ->
-    State1 = update_peer(true, Index, Index + 1, Epoch, State),
+    State1 = update_peer(true, Index, Index + 1, Epoch,From, State),
     State2 = reset_snapshot(State1),
     progress(State2#state{force_request = true});
 
@@ -269,10 +291,10 @@ handle_cast(#install_snapshot_reply{term = PeerTerm},
     State1 = reset_timers(true, State),
     State2 = reset_snapshot(State1),
     {noreply, State2};
-handle_cast(#install_snapshot_reply{request_ref = RF, epoch = Epoch},
+handle_cast(#install_snapshot_reply{from_peer = From,request_ref = RF, epoch = Epoch},
     State = #state{request_ref = RF}) ->
     ?WARNING(State,"Copy snapshot failed"),
-    State1 = update_peer(Epoch, State),
+    State1 = update_peer(Epoch,From, State),
     State2 = reset_snapshot(State1),
     progress(State2#state{force_request = true});
 
@@ -465,18 +487,18 @@ start_copy_snapshot(#install_snapshot_reply{port = Port, addr = Addr},
     {PID, MRef} = spawn_monitor(Fun),
     State#state{snapshot_progres = P#snapshot_progress{mref = MRef, process = PID}}.
 
-update_peer(Epoch, State = #state{peer = Peer, raft = Raft}) ->
+update_peer(Epoch,From,State = #state{peer = Peer, raft = Raft}) ->
     Peer1 = Peer#peer{epoch = Epoch},
     zraft_consensus:sync_peer(Raft, flase),
-    State#state{peer = Peer1}.
-update_peer(NextIndex, Epoch, State = #state{peer = Peer, raft = Raft}) ->
+    State#state{peer = Peer1,remote_peer_id = From}.
+update_peer(NextIndex, Epoch,From,State = #state{peer = Peer, raft = Raft}) ->
     Peer1 = Peer#peer{epoch = Epoch, next_index = NextIndex},
     zraft_consensus:sync_peer(Raft, false),
-    State#state{peer = Peer1}.
-update_peer(MayBeCommit, LastIndex, NextIndex, Epoch, State = #state{peer = Peer, raft = Raft}) ->
+    State#state{peer = Peer1,remote_peer_id = From}.
+update_peer(MayBeCommit, LastIndex, NextIndex, Epoch,From, State = #state{peer = Peer, raft = Raft}) ->
     Peer1 = Peer#peer{epoch = Epoch, last_agree_index = LastIndex, next_index = NextIndex},
     zraft_consensus:sync_peer(Raft, MayBeCommit),
-    State#state{peer = Peer1}.
+    State#state{peer = Peer1,remote_peer_id = From}.
 
 print_id(#state{raft = Raft,peer = #peer{id = ProxyID}})->
     PeerID = zraft_util:peer_id(Raft),
@@ -680,7 +702,7 @@ wait_request() ->
     end.
 
 fake_append_reply(PeerID, {_, #append_entries{request_ref = Ref, from = From, epoch = Epoch}}, Reply) ->
-    zraft_peer_route:reply_proxy(From, Reply#append_reply{from_peer = PeerID, request_ref = Ref, epoch = Epoch}).
+    zraft_peer_route:reply_proxy(From, Reply#append_reply{from_peer = {PeerID,self()}, request_ref = Ref, epoch = Epoch}).
 fake_need_snapshot({_, #append_entries{request_ref = Ref, from = From}}) ->
     Snapshot = #install_snapshot{from = From, request_ref = Ref, data = [], epoch = 7, index = 3, term = 6},
     zraft_peer_route:reply_proxy(From, Snapshot).

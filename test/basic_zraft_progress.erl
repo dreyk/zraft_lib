@@ -88,6 +88,10 @@ progress() ->
             },
             Res2
         ),
+        Up1 = check_progress(Peer1),
+        ?assertMatch({peer_up,{{test,_},_}},Up1),
+        Up2 = check_progress(Peer2),
+        ?assertMatch({peer_up,{{test,_},_}},Up2),
         %%check hearbeat
         Command1_1 = check_progress(Peer1),
         ?assertMatch(
@@ -341,7 +345,7 @@ check_progress(Peer) ->
 fake_reply(Command = #append_entries{epoch = E}, Reply, Peer) ->
     zraft_peer_route:reply_proxy(
         Command#append_entries.from,
-        Reply#append_reply{from_peer = Peer, request_ref = Command#append_entries.request_ref,epoch = E}
+        Reply#append_reply{from_peer = {Peer,self()}, request_ref = Command#append_entries.request_ref,epoch = E}
     );
 fake_reply(Command = #vote_request{epoch = E}, Reply, Peer) ->
     zraft_peer_route:reply_consensus(

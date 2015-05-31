@@ -317,6 +317,9 @@ follower(Req = #append_entries{}, State) ->
     handle_append_entries(follower, Req, State);
 follower(Req = #vote_request{}, State) ->
     handle_vote_reuqest(follower, Req, State);
+follower({peer_up,PeerAddr}, State = #state{}) ->
+    ?INFO(State,"Peer ~p has restarted",[zraft_util:peer_id(PeerAddr)]),
+    {next_state, follower, State};
 follower(Req, State = #state{}) ->
     drop_request(follower, Req, State).
 
@@ -382,6 +385,9 @@ candidate(Req = #vote_request{}, State) ->
     handle_vote_reuqest(candidate, Req, State);
 candidate({make_snapshot_info, From, Index}, State) ->
     make_snapshot_info(candidate, From, Index, State);
+candidate({peer_up,PeerAddr}, State = #state{}) ->
+    ?INFO(State,"Peer ~p has restarted",[zraft_util:peer_id(PeerAddr)]),
+    {next_state, candidate, State};
 candidate(Req, State = #state{}) ->
     drop_request(candidate, Req, State).
 
@@ -415,6 +421,10 @@ leader({maybe_step_down, Term}, State) ->
 leader({replicate_log, ToPeer, AppendReq}, State = #state{log = Log, current_term = Term, epoch = Epoch}) ->
     zraft_fs_log:replicate_log(Log, ToPeer, AppendReq#append_entries{term = Term, epoch = Epoch}),
     {next_state, leader, State};
+leader({peer_up,PeerAddr}, State = #state{}) ->
+    to_peer(zraft_util:peer_id(PeerAddr),{peer_up,PeerAddr},State),
+    ?INFO(State,"Peer ~p has restarted",[zraft_util:peer_id(PeerAddr)]),
+    {next_state,leader, State};
 leader(Req, State = #state{}) ->
     drop_request(leader, Req, State).
 
@@ -849,7 +859,7 @@ reject_install_snapshot(Req, State) ->
     Reply = #install_snapshot_reply{
         epoch = Epoch,
         result = failed,
-        from_peer = PeerID,
+        from_peer = peer(PeerID),
         request_ref = Ref,
         term = CurrentTerm,
         index = I
@@ -895,7 +905,7 @@ reject_append(Req, State) ->
     Reply = #append_reply{
         epoch = Epoch,
         success = false,
-        from_peer = PeerID,
+        from_peer = peer(PeerID),
         request_ref = Ref,
         last_index = LogState#log_descr.last_index,
         term = CurrentTerm
@@ -918,7 +928,7 @@ append_entries(Req, State = #state{log = Log, current_term = Term, id = PeerID})
         agree_index = PrevIndex + length(Entries),
         last_index = LogState#log_descr.last_index,
         term = Term,
-        from_peer = PeerID,
+        from_peer = peer(PeerID),
         request_ref = Ref,
         epoch = Epoch
     },
@@ -1297,7 +1307,7 @@ to_peer(_PeerID, _Cmd, #state{peers = []}) ->
 to_peer(PeerID, Cmd, #state{peers = Peers}) ->
     case lists:keyfind(PeerID, 1, Peers) of
         false ->
-            ?WARNING("Try update unknown peer ~p ~p", [PeerID, Peers]);
+            ok;
         {_, P} ->
             zraft_peer_proxy:cmd(P, Cmd)
     end,
