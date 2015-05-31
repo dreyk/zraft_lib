@@ -70,11 +70,20 @@ get_env(Key, Default) ->
 random(N) ->
     erlang:phash2(erlang:statistics(io), N).
 
-del_dir(Dir) ->
+del_dir(Dir)->
+    case del_dir1(Dir) of
+        {error,enoent}->
+            ok;
+        ok->
+            ok;
+        Else->
+            Else
+    end.
+del_dir1(Dir) ->
     case file:list_dir(Dir) of
         {ok, Files} ->
             lists:foreach(fun(F) ->
-                del_dir(filename:join(Dir, F)) end, Files),
+                del_dir1(filename:join(Dir, F)) end, Files),
             file:del_dir(Dir);
         _ ->
             file:delete(Dir),
@@ -142,6 +151,7 @@ gen_server_cancel_timer(Ref)->
 -spec peer_id(zraft_consensus:from_peer_addr())->zraft_consensus:peer_id().
 peer_id({ID,_})->
     ID.
+
 
 set_test_dir(Dir)->
     del_dir(Dir),

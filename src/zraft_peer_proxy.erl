@@ -21,22 +21,15 @@
 -author("dreyk").
 
 -include_lib("zraft_lib/include/zraft.hrl").
--ifdef(TEST).
--include_lib("eunit/include/eunit.hrl").
--define(INFO(S, As), ?debugFmt("[INFO] " ++ S, As)).
--define(INFO(S), ?debugMsg("[INFO] " ++ S)).
--define(WARNING(S, As), ?debugFmt("[WARNING] " ++ S, As)).
--define(WARNING(S), ?debugMsg("[WARNING] " ++ S)).
--define(ERROR(S, As), ?debugFmt("[ERROR] " ++ S, As)).
--define(ERROR(S), ?debugMsg("[ERROR] " ++ S)).
--else.
--define(INFO(S, As), lager:info(S, As)).
--define(INFO(S), lager:info(S)).
--define(WARNING(S, As), lager:warning(S, As)).
--define(WARNING(S), lager:warning(S)).
--define(ERROR(S, As), lager:error(S, As)).
--define(ERROR(S), lager:error(S)).
--endif.
+
+-define(INFO(State,S, As),?MINFO("~p: "++S,[print_id(State)|As])).
+-define(INFO(State,S), ?MINFO("~p: "++S,[print_id(State)])).
+-define(ERROR(State,S, As),?MERROR("~p: "++S,[print_id(State)|As])).
+-define(ERROR(State,S), ?MERROR("~p: "++S,[print_id(State)])).
+-define(DEBUG(State,S, As),?MDEBUG("~p: "++S,[print_id(State)|As])).
+-define(DEBUG(State,S), ?MDEBUG("~p: "++S,[print_id(State)])).
+-define(WARNING(State,S, As),?MWARNING("~p: "++S,[print_id(State)|As])).
+-define(WARNING(State,S), ?MWARNING("~p: "++S,[print_id(State)])).
 
 -behaviour(gen_server).
 
@@ -54,9 +47,8 @@
     stat/2,
     stop_sync/1]).
 
--record(snapshot_progress, {files, process, mref, index}).
+-record(snapshot_progress, {snapshot_dir, process, mref, index}).
 -record(state, {
-    id,
     peer,
     raft,
     request_timer,
@@ -88,10 +80,9 @@ start_link(Raft, PeerID, BackEnd) ->
     gen_server:start_link(?MODULE, [Raft, PeerID, BackEnd], []).
 
 init([Raft, PeerID, BackEnd]) ->
-    ID = zraft_util:peer_id(Raft),
     gen_server:cast(self(), start_peer),
     ReqTimeout = zraft_consensus:get_election_timeout()*2,
-    {ok, #state{id = ID, raft = Raft, back_end = BackEnd, peer = #peer{id = PeerID}, request_timeout = ReqTimeout}}.
+    {ok, #state{raft = Raft, back_end = BackEnd, peer = #peer{id = PeerID}, request_timeout = ReqTimeout}}.
 
 handle_call(force_hearbeat_timeout, _, State = #state{hearbeat_timer = Timer}) ->
     if
@@ -130,7 +121,7 @@ handle_cast(?LOST_LEADERSHIP_CMD,
     State3 = State2#state{peer = Peer#peer{has_vote = false, epoch = 0}, current_term = 0},
     {noreply, State3};
 handle_cast(hearbeat_timeout, State = #state{request_ref = Ref}) when Ref /= undefined ->
-    lager:warning("There is active request"),
+    ?WARNING(State,"There is active request"),
     {noreply, State};
 handle_cast(hearbeat_timeout, State) ->%%send new hearbeat
     State1 = reset_timers(false, State),
@@ -144,7 +135,7 @@ handle_cast(hearbeat_timeout, State) ->%%send new hearbeat
             {noreply, State2}
     end;
 handle_cast(request_timeout, State = #state{request_ref = undefined}) ->
-    lager:warning("There is't active request"),
+    ?WARNING(State,"There is't active request"),
     {noreply, State};
 handle_cast(request_timeout, State) ->%%send new request
     State1 = reset_timers(false, State),
@@ -209,16 +200,16 @@ handle_cast(#append_reply{epoch = Epoch, success = true, agree_index = Index, re
     {noreply, State3};
 
 handle_cast(#append_reply{term = PeerTerm},
-    State = #state{current_term = CurrentTerm, id = ID, peer = Peer, raft = Raft}) when PeerTerm > CurrentTerm ->
+    State = #state{current_term = CurrentTerm,raft = Raft}) when PeerTerm > CurrentTerm ->
     %%Actualy CurrentTerm maybe out of date now, but it's not problem. We will receive new term or shutdown soon.
-    lager:warning("~p:Peer ~p has new term(leader)", [ID, Peer#peer.id]),
+    ?WARNING(State,"Peer has new term(leader)"),
     zraft_consensus:maybe_step_down(Raft, PeerTerm),
     State1 = reset_timers(true, State),
     {noreply, State1};
 
 handle_cast(#append_reply{request_ref = RF, last_index = LastIndex, epoch = Epoch},
-    State = #state{id = ID, peer = Peer, request_ref = RF}) ->
-    lager:warning("~p:Peer ~p out of date", [ID, Peer#peer.id]),
+    State = #state{peer = Peer, request_ref = RF}) ->
+    ?WARNING(State,"Peer out of date"),
     DecNext = Peer#peer.next_index - 1,
     NextIndex = max(1, min(LastIndex, DecNext)),
     State1 = update_peer(NextIndex, Epoch, State),
@@ -228,15 +219,16 @@ handle_cast(#append_reply{}, State) ->%%Out of date responce
     {noreply, State};
 
 
-handle_cast(Req = #install_snapshot{request_ref = RF, term = Term, epoch = Epoch}, State = #state{request_ref = RF}) ->
+handle_cast(Req = #install_snapshot{request_ref = RF, term = Term, epoch = Epoch},
+    State = #state{request_ref = RF}) ->
     State1 = reset_timers(false, State),
+    ?INFO(State,"Need Install snaphsot"),
     %%try start snapshot copy process
     State2 = install_snapshot(Req, State1#state{current_epoch = Epoch, current_term = Term}),
     {noreply, State2};
 
-handle_cast(#install_snapshot{data = FilesInfo}, State) ->%%Out of date responce
+handle_cast(#install_snapshot{}, State) ->%%Out of date responce
     %%close all opened files
-    zraft_snapshot_receiver:discard_files_info(FilesInfo),
     {noreply, State};
 
 handle_cast(Resp = #install_snapshot_reply{result = start, request_ref = RF, epoch = Epoch},
@@ -270,16 +262,16 @@ handle_cast(#install_snapshot_reply{index = Index, result = finish, request_ref 
 
 %%Snapshot RPC failed
 handle_cast(#install_snapshot_reply{term = PeerTerm},
-    State = #state{current_term = CurrentTerm, id = ID, peer = Peer, raft = Raft}) when PeerTerm > CurrentTerm ->
+    State = #state{current_term = CurrentTerm,raft = Raft}) when PeerTerm > CurrentTerm ->
     %%Actualy CurrentTerm maybe out of date now but is's not problem. We will receive new term or shutdown soon.
-    lager:warning("~p:Peer ~p has new term(leader)", [ID, Peer#peer.id]),
+    ?WARNING(State,"Peer has new term(leader)"),
     zraft_consensus:maybe_step_down(Raft, PeerTerm),
     State1 = reset_timers(true, State),
     State2 = reset_snapshot(State1),
     {noreply, State2};
 handle_cast(#install_snapshot_reply{request_ref = RF, epoch = Epoch},
-    State = #state{id = ID, peer = Peer, request_ref = RF}) ->
-    lager:warning("~p:Peer ~p copy snapshot failed", [ID, Peer#peer.id]),
+    State = #state{request_ref = RF}) ->
+    ?WARNING(State,"Copy snapshot failed"),
     State1 = update_peer(Epoch, State),
     State2 = reset_snapshot(State1),
     progress(State2#state{force_request = true});
@@ -302,24 +294,24 @@ handle_cast(_Request, State) ->
     {noreply, State}.
 
 handle_info({'DOWN', Ref, process, _, normal},
-    State = #state{snapshot_progres = #snapshot_progress{files = Files, mref = Ref}}) ->
-    zraft_snapshot_receiver:discard_files_info(Files),
+    State = #state{snapshot_progres = #snapshot_progress{mref = Ref}}) ->
+    ?INFO(State,"Snapshot has transfered."),
     State1 = reset_timers(false, State),
     State2 = install_snapshot_hearbeat(finish, State1),
     {noreply, State2#state{snapshot_progres = undefined, force_request = true}};
-handle_info({'DOWN', Ref, process, _, normal},
-    State = #state{snapshot_progres = #snapshot_progress{files = Files, mref = Ref}}) ->
-    zraft_snapshot_receiver:discard_files_info(Files),
+handle_info({'DOWN', Ref, process, _, Reason},
+    State = #state{snapshot_progres = #snapshot_progress{mref = Ref}}) ->
+    ?ERROR(State,"Snapshot transfer failed ~p",[Reason]),
     progress(State#state{force_request = true, snapshot_progres = undefined});
 handle_info(_, State) ->
     {noreply, State}.
 
-terminate(_Reason, #state{snapshot_progres = Progress}) ->
+terminate(Reason, State=#state{snapshot_progres = Progress}) ->
+    ?WARNING(State,"Proxy is being stoped ~p",[Reason]),
     if
         Progress == undefined ->
             ok;
         true ->
-            zraft_snapshot_receiver:discard_files_info(Progress#snapshot_progress.files),
             if
                 is_pid(Progress#snapshot_progress.process) ->
                     exit(Progress#snapshot_progress.process, kill);
@@ -332,7 +324,7 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 start_replication(State) ->
-    #state{peer = Peer, raft = Raft, force_hearbeat = FH, id = ID, request_timeout = Timeout} = State,
+    #state{peer = Peer, raft = Raft, force_hearbeat = FH, request_timeout = Timeout} = State,
     #peer{next_index = NextIndex, id = PeerID} = Peer,
     PrevIndex = NextIndex - 1,
     RequestRef = erlang:make_ref(),
@@ -340,34 +332,36 @@ start_replication(State) ->
         prev_log_index = PrevIndex,
         request_ref = RequestRef,
         entries = not FH,
-        from = {ID, self()}
+        from = from_addr(State)
     },
     zraft_consensus:replicate_log(Raft, PeerID, Req),
     Timer = zraft_util:gen_server_cast_after(Timeout, request_timeout),
     State#state{request_ref = RequestRef, request_timer = Timer}.
 replicate(Req, State) ->
-    #state{peer = Peer, id = ID, request_timeout = Timeout} = State,
+    #state{peer = Peer,request_timeout = Timeout} = State,
     #peer{id = PeerID} = Peer,
     RequestRef = erlang:make_ref(),
     #append_entries{commit_index = Commit,prev_log_index = Prev,entries = Entries}=Req,
     NewCommitIndex = min(Commit,Prev+length(Entries)),
-    zraft_peer_route:cmd(PeerID, Req#append_entries{commit_index = NewCommitIndex,request_ref = RequestRef, from = {ID, self()}}),
+    zraft_peer_route:cmd(
+        PeerID,
+        Req#append_entries{commit_index = NewCommitIndex,request_ref = RequestRef, from = from_addr(State)}
+    ),
     Timer = zraft_util:gen_server_cast_after(Timeout, request_timeout),
     State#state{request_ref = RequestRef, request_timer = Timer}.
 
 install_snapshot(Req, State) ->
-    #state{peer = Peer, id = ID, request_timeout = Timeout} = State,
+    #state{peer = Peer,request_timeout = Timeout} = State,
     #peer{id = PeerID} = Peer,
-    SnapsotProgress = #snapshot_progress{files = Req#install_snapshot.data, index = Req#install_snapshot.index},
+    SnapsotProgress = #snapshot_progress{snapshot_dir = Req#install_snapshot.data, index = Req#install_snapshot.index},
     RequestRef = erlang:make_ref(),
-    NewReq = Req#install_snapshot{data = start, request_ref = RequestRef, from = {ID, self()}},
+    NewReq = Req#install_snapshot{data = start, request_ref = RequestRef, from = from_addr(State)},
     zraft_peer_route:cmd(PeerID, NewReq),
     Timer = zraft_util:gen_server_cast_after(Timeout, request_timeout),
     State#state{request_ref = RequestRef, request_timer = Timer, snapshot_progres = SnapsotProgress}.
 install_snapshot_hearbeat(Type, State) ->
     #state{
         peer = Peer,
-        id = ID,
         request_timeout = Timeout,
         snapshot_progres = Progress,
         current_term = Term,
@@ -379,7 +373,7 @@ install_snapshot_hearbeat(Type, State) ->
     NewReq = #install_snapshot{
         data = Type,
         request_ref = RequestRef,
-        from = {ID, self()},
+        from = from_addr(State),
         index = Index,
         term = Term,
         epoch = Epoch
@@ -390,7 +384,8 @@ install_snapshot_hearbeat(Type, State) ->
 
 reset_snapshot(State = #state{snapshot_progres = undefined}) ->
     State;
-reset_snapshot(State = #state{snapshot_progres = #snapshot_progress{mref = Ref, process = P, files = Files}}) ->
+reset_snapshot(State = #state{snapshot_progres = #snapshot_progress{mref = Ref, process = P}}) ->
+    ?INFO(State,"Reseting snapshot transfer"),
     if
         Ref /= undefined ->
             erlang:demonitor(Ref, [flush]),
@@ -398,7 +393,6 @@ reset_snapshot(State = #state{snapshot_progres = #snapshot_progress{mref = Ref, 
         true ->
             ok
     end,
-    zraft_snapshot_receiver:discard_files_info(Files),
     State#state{snapshot_progres = undefined}.
 
 reset_timers(Result, State = #state{request_timer = RT, hearbeat_timer = HT}) ->
@@ -445,19 +439,28 @@ cancel_timer(undefined) ->
 cancel_timer(Ref) ->
     zraft_util:gen_server_cancel_timer(Ref).
 
-maybe_start_remote(#state{id = ID, back_end = BackEnd, peer = Peer}) ->
-    if
-        ID == Peer#peer.id ->
+maybe_start_remote(#state{back_end = BackEnd, peer = Peer,raft = Raft}) ->
+    case Raft of
+        {ID,_} when ID==Peer#peer.id ->
             ok;
-        true ->
+        _ ->
             zraft_peer_route:start_peer(Peer#peer.id, BackEnd),
             ok
     end.
 
 start_copy_snapshot(#install_snapshot_reply{port = Port, addr = Addr},
     State = #state{snapshot_progres = P}) ->
+    ?INFO(State,"Starting transfer snapshot via tcp ~p:~p",[Addr,Port]),
     Fun = fun() ->
-        zraft_snapshot_receiver:copy_files(P#snapshot_progress.files, Addr, Port)
+        FilesToCopy  = zraft_snapshot_receiver:copy_info(P#snapshot_progress.snapshot_dir),
+        case catch zraft_snapshot_receiver:copy_files(print_id(State),FilesToCopy, Addr, Port) of
+            ok->
+                zraft_snapshot_receiver:discard_files_info(FilesToCopy),
+                ok;
+            Else->
+                zraft_snapshot_receiver:discard_files_info(FilesToCopy),
+                exit(Else)
+        end
     end,
     {PID, MRef} = spawn_monitor(Fun),
     State#state{snapshot_progres = P#snapshot_progress{mref = MRef, process = PID}}.
@@ -475,6 +478,14 @@ update_peer(MayBeCommit, LastIndex, NextIndex, Epoch, State = #state{peer = Peer
     zraft_consensus:sync_peer(Raft, MayBeCommit),
     State#state{peer = Peer1}.
 
+print_id(#state{raft = Raft,peer = #peer{id = ProxyID}})->
+    PeerID = zraft_util:peer_id(Raft),
+    {PeerID,'->',ProxyID}.
+
+from_addr(#state{raft = Raft})->
+    ID = zraft_util:peer_id(Raft),
+    {ID,self()}.
+
 -ifdef(TEST).
 setup_peer() ->
     meck:new(zraft_peer_route, [passthrough]),
@@ -483,8 +494,9 @@ setup_peer() ->
     meck:expect(zraft_consensus, get_election_timeout, fun() -> 1000 end),
     meck:expect(zraft_peer_route, start_peer, fun(PeerToStart, BackEnd) ->
         ?debugFmt("Starting ~p:~s", [PeerToStart, BackEnd]), ok end),
-    meck:expect(zraft_snapshot_receiver,copy_files,fun(A1,A2,A3)->
-        ?debugFmt("copy snapshot: ~p",[{A1,A2,A3}]) end),
+    meck:expect(zraft_snapshot_receiver,copy_info,fun(_)-> [] end),
+    meck:expect(zraft_snapshot_receiver,copy_files,fun(A1,A2,A3,A4)->
+        ?debugFmt("copy snapshot: ~p",[{A1,A2,A3,A4}]) end),
     ok.
 stop_peer(_) ->
     meck:unload(zraft_peer_route),

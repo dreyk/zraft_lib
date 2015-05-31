@@ -31,11 +31,13 @@ force_timeout(P) ->
     gen_fsm:sync_send_all_state_event(P, force_timeout).
 
 setup_node() ->
-    zraft_util:set_test_dir("test-data"),
+    zraft_util:set_test_dir("full-test-data"),
+    application:set_env(zraft_lib,max_log_count,10),
     net_kernel:start(['zraft_test@localhost', shortnames]),
     ok.
 stop_node(_) ->
     net_kernel:stop(),
+    application:unset_env(zraft_lib,max_log_count),
     zraft_util:clear_test_dir("test-data"),
     ok.
 
@@ -139,14 +141,42 @@ progress() ->
 
         %%drop test2 peer and all it's data
         ok = zraft_consensus:stop(Peer2),
-        ok = zraft_util:del_dir("test-data/test2-zraft_test_localhost"),
+        ok = zraft_util:del_dir("full-test-data/test2-zraft_test_localhost"),
         %%restart it this empty state
         {ok, Peer22} = zraft_consensus:start_link(PeerID2, zraft_dict_backend),
         %%wait log replicate
         ok = wait_follower_sync(5,5,2,PeerID2,Peer22,1),
+        R1 = zraft_consensus:query_local(PeerID2,fun(Dict)->lists:ukeysort(1,dict:to_list(Dict)) end,?TIMEOUT),
+        ?assertMatch([{1,"1"}],R1),
+
+
+        [zraft_consensus:write(PeerID1,{I,integer_to_list(I)},?TIMEOUT)||I<-lists:seq(2,8)],
+        Res7 = zraft_consensus:stat(Peer1),
+        ?assertMatch(
+            #peer_start{
+                term = 2,
+                state_name = leader,
+                log_state = #log_descr{commit_index = 12, first_index = 11, last_index = 12, last_term = 2},
+                leader = {test1,_},
+                snapshot_info = #snapshot_info{index = 10,term = 2,conf_index = 4}
+            },
+            Res7
+        ),
+
+        ok = wait_snapshot_done(10,Peer1,1),
+        ok = zraft_consensus:stop(Peer3),
+        ok = zraft_util:del_dir("full-test-data/test3-zraft_test_localhost"),
+        %%restart it this empty state
+        {ok, Peer32} = zraft_consensus:start_link(PeerID3, zraft_dict_backend),
+        %%wait log replicate and snapshot
+        ok = wait_follower_sync(12,12,2,PeerID3,Peer32,1),
+
+        R2 = zraft_consensus:query_local(PeerID3,fun(Dict)->lists:ukeysort(1,dict:to_list(Dict)) end,?TIMEOUT),
+        ?assertMatch([{1,"1"},{2,"2"},{3,"3"},{4,"4"},{5,"5"},{6,"6"},{7,"7"},{8,"8"}],R2),
+
         ok = zraft_consensus:stop(Peer1),
         ok = zraft_consensus:stop(Peer22),
-        ok = zraft_consensus:stop(Peer3)
+        ok = zraft_consensus:stop(Peer32)
     end}.
 
 wait_new_config(Index,PeerID,Attempt)->
@@ -181,6 +211,15 @@ wait_follower_sync(CommitIndex,LastIndex,Term,PeerID,Peer,Attempt)->
         _->
             ?debugFmt("Wait start ~p attempt - ~p",[PeerID,Attempt]),
             wait_follower_sync(CommitIndex,LastIndex,Term,PeerID,Peer,Attempt+1)
+    end.
+
+wait_snapshot_done(CommitIndex,Peer,Attempt)->
+    case zraft_consensus:stat(Peer) of
+        #peer_start{snapshot_info = #snapshot_info{index = CommitIndex}}->
+            ok;
+        _->
+            ?debugFmt("Wait snapshot attempt - ~p",[Attempt]),
+            wait_snapshot_done(CommitIndex,Peer,Attempt+1)
     end.
 
 

@@ -29,6 +29,9 @@
 init(_) ->
     {ok,dict:new()}.
 
+query(Fn,Dict) when is_function(Fn)->
+    V = Fn(Dict),
+    {ok,V};
 query(Key,Dict) ->
     V = dict:find(Key,Dict),
     {ok,V}.
@@ -49,7 +52,10 @@ snapshot(Dict)->
             Size = size(V1),
             Row = <<0:8,Size:64,V1/binary>>,
             file:write(FD,Row)
-            end,dict:to_list(Dict)) end,
+            end,dict:to_list(Dict)),
+        ok = file:close(FD),
+        ok
+    end,
     {async,Fun,Dict}.
 
 %% @doc Notify that snapshot has done.

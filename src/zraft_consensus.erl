@@ -69,6 +69,7 @@
     read_request/3,
     get_conf_request/2,
     query/3,
+    query_local/3,
     get_conf/2,
     write/3,
     truncate_log/2,
@@ -76,26 +77,16 @@
     stat/1
 ]).
 
--ifdef(TEST).
--include_lib("eunit/include/eunit.hrl").
--define(INFO(S, As), ?debugFmt("[INFO] " ++ S, As)).
--define(INFO(S), ?debugMsg("[INFO] " ++ S)).
--define(WARNING(S, As), ?debugFmt("[WARNING] " ++ S, As)).
--define(WARNING(S), ?debugMsg("[WARNING] " ++ S)).
--define(ERROR(S, As), ?debugFmt("[ERROR] " ++ S, As)).
--define(ERROR(S), ?debugMsg("[ERROR] " ++ S)).
--define(DEBUG(S, As), ?debugFmt("[DEBUG] " ++ S, As)).
--define(DEBUH(S), ?debugMsg("[DEBUG] " ++ S)).
--else.
--define(INFO(S, As), lager:info(S, As)).
--define(INFO(S), lager:info(S)).
--define(WARNING(S, As), lager:warning(S, As)).
--define(WARNING(S), lager:warning(S)).
--define(ERROR(S, As), lager:error(S, As)).
--define(ERROR(S), lager:error(S)).
--define(ERROR(S, As), lager:debug(S, As)).
--define(ERROR(S), lager:debug(S)).
--endif.
+
+-define(INFO(State,S, As),?MINFO("~p: "++S,[print_id(State)|As])).
+-define(INFO(State,S), ?MINFO("~p: "++S,[print_id(State)])).
+-define(ERROR(State,S, As),?MERROR("~p: "++S,[print_id(State)|As])).
+-define(ERROR(State,S), ?MERROR("~p: "++S,[print_id(State)])).
+-define(DEBUG(State,S, As),?MDEBUG("~p: "++S,[print_id(State)|As])).
+-define(DEBUG(State,S), ?MDEBUG("~p: "++S,[print_id(State)])).
+-define(WARNING(State,S, As),?MWARNING("~p: "++S,[print_id(State)|As])).
+-define(WARNING(State,S), ?MWARNING("~p: "++S,[print_id(State)])).
+
 
 -define(ETIMEOUT, zraft_util:get_env(?ELECTION_TIMEOUT_PARAM, ?ELECTION_TIMEOUT)).
 
@@ -122,6 +113,7 @@
 
 -record(config, {id, state, conf, old_peers, new_peers}).
 -record(read_request, {function, args, start_time, timeout}).
+-record(read_request_local, {function, args}).
 -record(conf_change_requet, {prev_id, start_time, timeout, from, peers, index}).
 -record(write_request, {data, start_time, timeout, from}).
 -type raft_term() :: non_neg_integer().
@@ -142,6 +134,12 @@
 %%%===================================================================
 %%% Client API
 %%%===================================================================
+
+%% @doc Query data form user backend from current peer.
+-spec query_local(peer_id(), term(), timeout()) -> {ok, term()}|retry|{error, not_leader}|{error, term()}.
+query_local(PeerID, Query, Timeout) ->
+    Req = #read_request_local{function = read_request, args = [Query]},
+    gen_fsm:sync_send_all_state_event(PeerID, Req, Timeout).
 
 %% @doc Query data form user backend.
 -spec query(peer_id(), term(), timeout()) -> {ok, term()}|retry|{error, not_leader}|{error, term()}.
@@ -243,7 +241,7 @@ init_state(InitState) ->
         back_end = BackEnd,
         snapshot_info = Info
     } = InitState,
-    ?INFO("~p: Init state",[PeerID]),
+    ?INFO(InitState,"Init state"),
     Meta = zraft_fs_log:get_raft_meta(Log),
     case maybe_set_back_end(BackEnd, Meta, Log) of
         {error, Error} ->
@@ -339,15 +337,15 @@ bootstrap(From, State) ->
 %%% Candidate State
 %%%===================================================================
 candidate(timeout, State = #state{current_term = Term}) ->
-    ?INFO("~p: Candidate start new election. Prev term ~p timed out", [State#state.id, Term]),
+    ?INFO(State,"Candidate start new election. Prev term ~p timed out", [Term]),
     start_election(State);
 candidate(#vote_reply{request_term = Term1}, State = #state{current_term = Term2}) when Term1 /= Term2 ->
     %%ignore result. May be expired
     {next_state, candidate, State};
 candidate(R = #vote_reply{peer_term = Term1, commit = CommitIndex},
     State = #state{current_term = Term2}) when Term1 > Term2 ->
-    ?INFO("~p: Received vote response from ~p. PeerTerm:~p > SelfTerm:~p",
-        [State#state.id, R#vote_reply.from_peer, Term1, Term2]),
+    ?INFO(State,"Received vote response from ~p. PeerTerm(~p) > SelfTerm(~p)",
+        [R#vote_reply.from_peer, Term1, Term2]),
     case maybe_shutdown(CommitIndex, State) of
         true ->
             {stop, nornal, State};
@@ -355,7 +353,7 @@ candidate(R = #vote_reply{peer_term = Term1, commit = CommitIndex},
             step_down(candidate, Term1, State)
     end;
 candidate(R = #vote_reply{from_peer = PeerID, granted = Granted, epoch = Epoch}, State) ->
-    ?INFO("~p: Vote ~p response from ~p.", [State#state.id, Granted, PeerID]),
+    ?INFO(State,"Receive vote ~p response from ~p.", [Granted, PeerID]),
     update_peer(PeerID, fun(P) -> P#peer{has_vote = Granted, epoch = Epoch} end, State),
     if
         Granted ->
@@ -422,8 +420,8 @@ leader(_Event, _From, State) ->
     {reply, {error, leader_not_supported}, leader, State}.
 
 %%drop all unknown requests
-drop_request(StateName, Req, State = #state{id = PeerID}) ->
-    lager:warning("~p: In state ~s drop reuqest ~p", [PeerID, Req]),
+drop_request(StateName, Req, State) ->
+    ?WARNING(State,"In state ~s drop reuqest ~p", [StateName, Req]),
     {next_state, StateName, State}.
 
 %%%===================================================================
@@ -443,10 +441,10 @@ handle_event(Info = #snapshot_info{}, StateName, State = #state{log = Log}) ->
             State2 = set_config(StateName, NewConf, State1),
             {next_state, StateName, State2};
         #log_op_result{result = Error} ->
-            ?ERROR("~p: Fail truncate log ~p", [State#state.id, Error]),
+            ?ERROR(State,"Fail truncate log ~p", [Error]),
             {stop, Error, State};
         Error ->
-            ?ERROR("~p: Fail truncate log ~p", [State#state.id, Error]),
+            ?ERROR(State,"Fail truncate log ~p", [Error]),
             {stop, {error, snapshot_failed}, State}
     end;
 handle_event({sync_peer, true}, leader, State) ->
@@ -513,6 +511,11 @@ handle_sync_event(stop, _From, _StateName, State) ->
 handle_sync_event(_, _From, load, InitialState) ->
     %%drop all in load state
     {reply, {error, loading}, load, InitialState};
+handle_sync_event(Req = #read_request_local{args = Args}, From, StateName,
+    State = #state{}) ->
+    #read_request_local{function = Function, args = Args} = Req,
+    erlang:apply(?MODULE, Function, [State,From | Args]),
+    {next_state,StateName, State};
 handle_sync_event(Req = #read_request{args = Args}, From, leader,
     State = #state{sessions = Sessions, epoch = Epoch}) ->
     #sessions{read = Requests} = Sessions,
@@ -583,10 +586,10 @@ handle_info({Async, Res}, load, InitState = #init_state{async = Async}) ->
         #log_op_result{result = ok} ->
             init_state(InitState#init_state{async = undefined});
         #log_op_result{result = Error} ->
-            ?ERROR("~p: Fail truncate log ~p", [InitState#init_state.id, Error]),
+            ?ERROR(InitState,"Fail truncate log ~p", [Error]),
             {stop, Error, InitState};
         Error ->
-            ?ERROR("~p: Fail truncate log ~p", [InitState#init_state.id, Error]),
+            ?ERROR(InitState,"Fail truncate log ~p", [Error]),
             {stop, Error, InitState}
     end;
 handle_info(_Info, StateName, State) ->
@@ -746,7 +749,7 @@ handle_vote_reuqest(StateName, Req, State) ->
                     end
             end;
         _ ->
-            ?WARNING("Rejecting RequestVote from ~p, since we recently heard from a "
+            ?WARNING(State,"Rejecting RequestVote from ~p, since we recently heard from a "
             "leader ~p. Should server ~p be shut down?",
                 [Req#vote_request.from, State#state.leader, Req#vote_request.from]),
             reject_vote(StateName, Req, State),
@@ -791,17 +794,17 @@ is_time_to_elect(#state{last_hearbeat = LastHearbeat, election_timeout = Timeout
     timer:now_diff(os:timestamp(), LastHearbeat) >= Timeout.
 
 handle_install_snapshot(StateName, Req = #install_snapshot{term = T1, from = From},
-    State = #state{current_term = T2, id = PeerID}) when T1 < T2 ->
-    ?WARNING("~p: Caller ~p is out of date.", [PeerID, From]),
+    State = #state{current_term = T2}) when T1 < T2 ->
+    ?WARNING(State,"Caller ~p is out of date.", [From]),
     reject_install_snapshot(Req, State),
     {next_state, StateName, State};
 handle_install_snapshot(StateName, Req = #install_snapshot{term = T1, from = From},
-    State = #state{current_term = T2, id = PeerID, leader = Leader}) when T1 == T2 ->
+    State = #state{current_term = T2,leader = Leader}) when T1 == T2 ->
     {NewLeader, _} = From,
     if
         (Leader /= undefined andalso NewLeader /= Leader) orelse StateName == leader ->
-            ?ERROR("~p: Received install snapshot from unknown leader ~p current leader is ~p",
-                [PeerID, NewLeader, Leader]),
+            ?ERROR(State,"Received install snapshot from unknown leader ~p current leader is ~p",
+                [NewLeader, Leader]),
             {stop, {error, invalid_new_leader}, State};
         NewLeader == Leader ->
             install_snapshot(Req, State);
@@ -836,17 +839,17 @@ install_snapshot(Req, State) ->
     {next_state, follower, State2}.
 
 handle_append_entries(StateName, Req = #append_entries{term = T1, from = From},
-    State = #state{current_term = T2, id = PeerID}) when T1 < T2 ->
-    ?WARNING("~p: Caller ~p is out of date.", [PeerID, From]),
+    State = #state{current_term = T2}) when T1 < T2 ->
+    ?WARNING(State,"Caller ~p is out of date.", [From]),
     reject_append(Req, State),
     {next_state, StateName, State};
 handle_append_entries(StateName, Req = #append_entries{term = T1, from = From},
-    State = #state{current_term = T2, id = PeerID, leader = Leader}) when T1 == T2 ->
+    State = #state{current_term = T2, leader = Leader}) when T1 == T2 ->
     {NewLeader, _} = From,
     if
         (Leader /= undefined andalso NewLeader /= Leader) orelse StateName == leader ->
-            ?ERROR("~p: Received apped entry from unknown leader ~p current leader is ~p",
-                [PeerID, NewLeader, Leader]),
+            ?ERROR(State,"Received apped entry from unknown leader ~p current leader is ~p",
+                [NewLeader, Leader]),
             {stop, {error, invalid_new_leader}, State};
         NewLeader == Leader ->
             append_entries(Req, State);
@@ -913,7 +916,7 @@ start_election(State =
     #state{leader = Leader, epoch = Epoch, current_term = Term, id = PeerID, log = Log, back_end = BackEnd, log_state = LogState}) ->
     NextTerm = Term + 1,
     Leader /= undefined andalso
-        ?INFO("Start for election in term ~p old leader was ~p", [NextTerm, Leader]),
+        ?INFO(State,"Start for election in term ~p old leader was ~p", [NextTerm, Leader]),
     ok = zraft_fs_log:update_raft_meta(
         Log,
         #raft_meta{voted_for = PeerID, back_end = BackEnd, current_term = NextTerm}
@@ -1147,7 +1150,6 @@ quorumMin([], _, {Ref, _}, _GetIndex, Count) ->
 quorumMin([ID1 | T1], [{ID2, _P2} | T2], Ref, GetIndex, Count) when ID1 > ID2 ->
     quorumMin([ID1 | T1], T2, Ref, GetIndex, Count);
 quorumMin([ID1 | _T1], [{ID2, _P2} | _T2], _Ref, _GetIndex, _Count) when ID1 < ID2 ->
-    ?ERROR("Configuration contains peer ~p that not included to all peers", [ID1]),
     exit({error, iconfig});
 quorumMin([_ID1 | T1], [{_ID2, P2} | T2], Ref, GetIndex, Count) ->%%ID1==ID2
     zraft_peer_proxy:value(P2, Ref, GetIndex),
@@ -1173,7 +1175,6 @@ quorumAll([], _, {Ref, _}, _GetIndex, Count) ->
 quorumAll([ID1 | T1], [{ID2, _P2} | T2], Ref, GetIndex, Count) when ID1 > ID2 ->
     quorumAll([ID1 | T1], T2, Ref, GetIndex, Count);
 quorumAll([ID1 | _T1], [{ID2, _P2} | _T2], _Ref, _GetIndex, _Count) when ID1 < ID2 ->
-    ?ERROR("Configuration contains peer ~p that not included to all peers", [ID1]),
     exit({error, iconfig});
 quorumAll([_ID1 | T1], [{_ID2, P2} | T2], Ref, GetIndex, Count) ->%%ID1==ID2
     zraft_peer_proxy:value(P2, Ref, GetIndex),
@@ -1434,6 +1435,11 @@ send_all_state_event(P, Event) when is_pid(P) ->
     gen_fsm:send_all_state_event(P, Event);
 send_all_state_event({_, P}, Event) ->
     gen_fsm:send_all_state_event(P, Event).
+
+print_id(#state{id = ID})->
+    ID;
+print_id(#init_state{id = ID})->
+    ID.
 
 -ifdef(TEST).
 setup_node() ->

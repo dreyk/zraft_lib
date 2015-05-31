@@ -44,13 +44,17 @@
 -define(SNAPSHOT_HEADER_VERIOSN, 1).
 -define(DATA_DIR, zraft_util:get_env(snapshot_dir, "data")).
 
--ifdef(TEST).
--include_lib("eunit/include/eunit.hrl").
--endif.
-
 -define(MAX_COUNT, zraft_util:get_env(max_log_count, 1000)).
 -define(SNAPSHOT_BACKUP, zraft_util:get_env(snapshot_backup, false)).
 
+-define(INFO(State,S, As),?MINFO("~p: "++S,[print_id(State)|As])).
+-define(INFO(State,S), ?MINFO("~p: "++S,[print_id(State)])).
+-define(ERROR(State,S, As),?MERROR("~p: "++S,[print_id(State)|As])).
+-define(ERROR(State,S), ?MERROR("~p: "++S,[print_id(State)])).
+-define(DEBUG(State,S, As),?MDEBUG("~p: "++S,[print_id(State)|As])).
+-define(DEBUG(State,S), ?MDEBUG("~p: "++S,[print_id(State)])).
+-define(WARNING(State,S, As),?MWARNING("~p: "++S,[print_id(State)|As])).
+-define(WARNING(State,S), ?MWARNING("~p: "++S,[print_id(State)])).
 
 -record(state, {
     raft,
@@ -120,9 +124,9 @@ handle_cast({append, Entries}, State) ->
 handle_cast(Req = #install_snapshot{data = prepare}, State) ->
     case read_last_snapshot_info(State) of
         {ok, #snapshot_info{index = Index}} ->
-            Contents = zraft_snapshot_receiver:copy_info(State#state.last_dir),
-            Req1 = Req#install_snapshot{index = Index, data = Contents},
-            zraft_peer_route:reply_proxy(Req1#install_snapshot.from, Req1);
+            Req1 = Req#install_snapshot{index = Index, data = State#state.last_dir},
+            zraft_peer_route:reply_proxy(Req1#install_snapshot.from, Req1),
+            {noreply,State};
         Else ->
             {stop, Else, State}
     end;
@@ -145,6 +149,7 @@ handle_cast(_, State) ->
 
 handle_info({'DOWN', Ref, process, _, normal},
     State = #state{active_snapshot = #snapshoter{mref = Ref, type = copy}}) ->
+    ?INFO(State,"Snapshot transfer has finished"),
     #state{active_snapshot = Snapshot} = State,
     zraft_util:gen_server_cast_after(
         zraft_consensus:get_election_timeout(),
@@ -154,9 +159,11 @@ handle_info({'DOWN', Ref, process, _, normal},
     {noreply, State#state{active_snapshot = Snapshot1}};
 handle_info({'DOWN', Ref, process, _, normal},
     State = #state{active_snapshot = #snapshoter{mref = Ref}}) ->
+    ?INFO(State,"Snapshot has finished"),
     finish_snapshot(State);
 handle_info({'DOWN', Ref, process, _, Error},
     State = #state{active_snapshot = #snapshoter{mref = Ref}}) ->
+    ?ERROR(State,"Snapshot make/transfer has failed"),
     #snapshoter{type = Type} = State#state.active_snapshot,
     State1 = discard_snapshot(Error, State),
     if
@@ -270,8 +277,9 @@ finish_install_snapshot(Req = #install_snapshot{from = From, index = I}, State) 
     Reply = install_answer(State#state.raft, Req),
     case State#state.active_snapshot of
         #snapshoter{from = From, last_index = I, type = copy} ->
+            Return  = finish_snapshot(State),
             zraft_peer_route:reply_proxy(From, Reply#install_snapshot_reply{result = finish}),
-            finish_snapshot(State);
+            Return;
         _ ->
             zraft_peer_route:reply_proxy(From, Reply),
             {noreply, State}
@@ -298,7 +306,7 @@ prepare_install_snapshot(Req, State = #state{dir = Dir, snapshot_count = SN, raf
     State1 = stop_snaphsoter(State),
     SnapshotDir = filename:join(Dir, "snapshot.tmp-" ++ integer_to_list(SN)),
     ok = zraft_util:make_dir(SnapshotDir),
-    {ok, {{Addr, Port}, Writer}} = zraft_snapshot_receiver:start(SnapshotDir),
+    {ok, {{Addr, Port}, Writer}} = zraft_snapshot_receiver:start(print_id(State),SnapshotDir),
     Reply = install_answer(Raft, Req),
     Reply1 = Reply#install_snapshot_reply{
         addr = Addr,
@@ -370,9 +378,9 @@ read_last_snapshot_info(SnapshotDir) ->
 
 discard_snapshot(_, State = #state{active_snapshot = undefined}) ->
     State;
-discard_snapshot(Reason, State = #state{raft = Raft, back_end = BackEnd, ustate = UState}) ->
+discard_snapshot(Reason, State = #state{ back_end = BackEnd, ustate = UState}) ->
     #snapshoter{type = Type} = State#state.active_snapshot,
-    lager:error("~p: Snaphost failed ~p", [Raft, Reason]),
+    ?ERROR(State,"Snapshot make/transfer has failed: ~p", [Reason]),
     State1 = stop_snaphsoter(State),
     if
         Type == copy ->
@@ -436,7 +444,7 @@ finish_snapshot(State) ->
             {noreply, State2};
         true ->
             {ok, UState1} = BackEnd:snapshot_done(UState),
-            State2 = State1#state{back_end = UState1},
+            State2 = State1#state{ustate  = UState1},
             truncate_log(State2),
             {noreply, State2}
     end.
@@ -454,19 +462,23 @@ install_snapshot(State = #state{raft = Raft,ustate = Ustate, back_end = BackEnd,
     truncate_log(Raft,SnaphotInfo),
     State#state{ustate = Ustate1, last_index = Index, log_count = 0, last_dir = SnapshotDir,last_snapshot_index = Index}.
 
-truncate_log(#state{raft = Raft,last_dir = SnapshotDir})->
+truncate_log(State=#state{raft = Raft,last_dir = SnapshotDir})->
     case read_last_snapshot_info(SnapshotDir) of
         {ok,Info}->
             truncate_log(Raft,Info);
         _->
-            lager:error("~p: Can't read last snapshot ~s",[Raft,SnapshotDir]),
+            ?ERROR(State,"Can't read last snapshot ~s",[SnapshotDir]),
             ok
     end.
 
 truncate_log(Raft,SnapshotInfo)->
     zraft_consensus:truncate_log(Raft,SnapshotInfo).
 
+print_id(#state{raft = Raft})->
+    zraft_util:peer_id(Raft).
+
 -ifdef(TEST).
+
 setup() ->
     application:set_env(zraft_lib,max_log_count,10),
     application:set_env(zraft_lib,snapshot_backup,true),

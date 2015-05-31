@@ -61,3 +61,24 @@
 
 -record(peer_start,{agree_index,epoch,term,allow_commit,leader,back_end,log_state,snapshot_info,conf,conf_state,state_name,proxy_peer_stats=[]}).
 -record(proxy_peer_stat,{peer_state,is_snapshoting}).
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+-define(MINFO(S, As), ?debugFmt("[INFO] " ++ S, As)).
+-define(MINFO(S), ?debugMsg("[INFO] " ++ S)).
+-define(MWARNING(S, As), ?debugFmt("[WARNING] " ++ S, As)).
+-define(MWARNING(S), ?debugMsg("[WARNING] " ++ S)).
+-define(MERROR(S, As), ?debugFmt("[ERROR] " ++ S, As)).
+-define(MERROR(S), ?debugMsg("[ERROR] " ++ S)).
+-define(MDEBUG(S, As), ?debugFmt("[DEBUG] " ++ S, As)).
+-define(MDEBUG(S), ?debugMsg("[DEBUG] " ++ S)).
+-else.
+-define(MINFO(S, As), lager:info(S, As)).
+-define(MINFO(S), lager:info(S)).
+-define(MWARNING(S, As), lager:warning(S, As)).
+-define(MWARNING(S), lager:warning(S)).
+-define(MERROR(S, As), lager:error(S, As)).
+-define(MERROR(S), lager:error(S)).
+-define(MDEBUG(S, As), lager:debug(S, As)).
+-define(MDEBUG(S), lager:debug(S)).
+-endif.

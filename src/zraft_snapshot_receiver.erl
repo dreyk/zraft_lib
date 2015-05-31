@@ -1,18 +1,29 @@
-%%%-------------------------------------------------------------------
-%%% @author dreyk
-%%% @copyright (C) 2015, <COMPANY>
-%%% @doc
-%%%
-%%% @end
-%%% Created : 26. May 2015 11:22
-%%%-------------------------------------------------------------------
+%% -------------------------------------------------------------------
+%% @author Gunin Alexander <guninalexander@gmail.com>
+%% Copyright (c) 2015 Gunin Alexander.  All Rights Reserved.
+%%
+%% This file is provided to you under the Apache License,
+%% Version 2.0 (the "License"); you may not use this file
+%% except in compliance with the License.  You may obtain
+%% a copy of the License at
+%%
+%%   http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing,
+%% software distributed under the License is distributed on an
+%% "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+%% KIND, either express or implied.  See the License for the
+%% specific language governing permissions and limitations
+%% under the License.
+%%
+%% -------------------------------------------------------------------
 -module(zraft_snapshot_receiver).
 -author("dreyk").
 
 -behaviour(gen_fsm).
 
 %% API
--export([start/1]).
+-export([start/2]).
 
 %% gen_fsm callbacks
 -export([init/1,
@@ -31,37 +42,45 @@
     filedata/3]).
 
 -export([stop/1]).
--export([copy_to/3, copy_info/1, copy_files/3, discard_files_info/1]).
+-export([copy_to/4, copy_info/1, copy_files/4, discard_files_info/1]).
 
 -define(LISTEN_TIMEOUT, 30000).
 -define(DATA_TIMEOUT, 10000).
 -define(NEXT_HEARBEAT, <<1:8>>).
 
--ifdef(TEST).
--include_lib("eunit/include/eunit.hrl").
--define(SNAPHOT_LISTENER_ADDR, "127.0.0.1").
--endif.
+-include_lib("zraft_lib/include/zraft.hrl").
 
--ifndef(TEST).
+-ifdef(TEST).
+-define(SNAPHOT_LISTENER_ADDR, "127.0.0.1").
+-else.
 -define(SNAPHOT_LISTENER_ADDR, zraft_util:get_env(snapshot_listener_addr, "0.0.0.0")).
 -endif.
 
--record(state, {dir, lsock, rsock, fd, size}).
+-define(INFO(State,S, As),?MINFO("~p: "++S,[print_id(State)|As])).
+-define(INFO(State,S), ?MINFO("~p: "++S,[print_id(State)])).
+-define(ERROR(State,S, As),?MERROR("~p: "++S,[print_id(State)|As])).
+-define(ERROR(State,S), ?MERROR("~p: "++S,[print_id(State)])).
+-define(DEBUG(State,S, As),?MDEBUG("~p: "++S,[print_id(State)|As])).
+-define(DEBUG(State,S), ?MDEBUG("~p: "++S,[print_id(State)])).
+-define(WARNING(State,S, As),?MWARNING("~p: "++S,[print_id(State)|As])).
+-define(WARNING(State,S), ?MWARNING("~p: "++S,[print_id(State)])).
 
-start(Dir) ->
-    {ok, Pid} = gen_fsm:start(?MODULE, [], []),
-    {ok, {Addr,Port}} = gen_fsm:sync_send_event(Pid, {start, Dir}),
-    {ok, {{Addr,Port}, Pid}}.
+-record(state, {peer_id,dir, lsock, rsock, fd, size,expected_size, curfile}).
 
-stop(P)->
-    gen_fsm:sync_send_all_state_event(P,stop).
+start(PeerID,Dir) ->
+    {ok, Pid} = gen_fsm:start(?MODULE, [PeerID], []),
+    {ok, {Addr, Port}} = gen_fsm:sync_send_event(Pid, {start, Dir}),
+    {ok, {{Addr, Port}, Pid}}.
 
-init([]) ->
-    {ok, prepare, #state{}, ?LISTEN_TIMEOUT}.
+stop(P) ->
+    gen_fsm:sync_send_all_state_event(P, stop).
+
+init([PeerID]) ->
+    {ok, prepare, #state{peer_id = PeerID}, ?LISTEN_TIMEOUT}.
 
 
 prepare(timeout, State) ->
-    lager:error("No init info ~p msec", [?LISTEN_TIMEOUT]),
+    ?ERROR(State,"No init info ~p msec.", [?LISTEN_TIMEOUT]),
     {stop, {error, timeout}, State};
 prepare(_, State) ->
     {stop, {error, not_supported}, State}.
@@ -69,24 +88,24 @@ prepare(_, State) ->
 prepare({start, Directory}, _From, State) ->
     Addr = ?SNAPHOT_LISTENER_ADDR,
     RAddr = case Addr of
-                "0.0.0.0"->
+                "0.0.0.0" ->
                     Default = zraft_util:node_addr(node()),
-                    zraft_util:get_env(snapshot_receiver_addr,Default);
-                Else->
-                    zraft_util:get_env(snapshot_receiver_addr,Else)
+                    zraft_util:get_env(snapshot_receiver_addr, Default);
+                Else ->
+                    zraft_util:get_env(snapshot_receiver_addr, Else)
             end,
     case inet_parse:address(Addr) of
         {ok, IpAdd} ->
-            listen_on(RAddr,IpAdd, State#state{dir = Directory});
+            listen_on(RAddr, IpAdd, State#state{dir = Directory});
         Err ->
-            lager:error("Can't start snapshot receiver listener on ~p: ~p", [Addr, Err]),
+            ?ERROR(State,"Can't start snapshot receiver listener on ~p: ~p.", [Addr, Err]),
             {stop, Err, Err, State}
     end;
 prepare(_, _, State) ->
     {stop, {error, not_supported}, {error, not_supported}, State}.
 
 listen(timeout, State) ->
-    lager:error("No connection to snapshot receiver during ~p msec", [?LISTEN_TIMEOUT]),
+    ?ERROR(State,"No connection to snapshot receiver during ~p msec.", [?LISTEN_TIMEOUT]),
     {stop, {error, timeout}, State};
 listen(_, State) ->
     {stop, {error, not_supported}, State}.
@@ -94,7 +113,7 @@ listen(_, _, State) ->
     {stop, {error, not_supported}, {error, not_supported}, State}.
 
 fileinfo(timeout, State) ->
-    lager:error("No data during ~p msec", [?DATA_TIMEOUT]),
+    ?ERROR(State,"No data during ~p msec.", [?DATA_TIMEOUT]),
     {stop, {error, timeout}, State};
 fileinfo(_, State) ->
     {stop, {error, not_supported}, State}.
@@ -102,7 +121,7 @@ fileinfo(_, _, State) ->
     {stop, {error, not_supported}, {error, not_supported}, State}.
 
 filedata(timeout, State) ->
-    lager:error("No data during ~p msec", [?DATA_TIMEOUT]),
+    ?ERROR(State,"No data during ~p msec.", [?DATA_TIMEOUT]),
     {stop, {error, timeout}, State};
 filedata(_, State) ->
     {stop, {error, not_supported}, State}.
@@ -113,7 +132,7 @@ handle_event(_Event, _StateName, State) ->
     {stop, {error, not_supported}, State}.
 
 handle_sync_event(stop, _From, _StateName, State) ->
-    {stop,normal,ok,State};
+    {stop, normal, ok, State};
 handle_sync_event(_Event, _From, _StateName, State) ->
     {stop, {error, not_supported}, {error, not_supported}, State}.
 
@@ -123,8 +142,10 @@ handle_info({inet_async, _ListSock, _Ref, {ok, CliSocket}}, listen, State) ->
     {next_state, fileinfo, State#state{rsock = CliSocket}, ?DATA_TIMEOUT};
 
 handle_info({tcp_closed, _Socket}, _StateName, State) ->
+    ?WARNING(State,"Snapshot receiver socket closed."),
     {stop, tcp_closed, State};
-handle_info({tcp_error, _Socket, _Reason}, _StateName, State) ->
+handle_info({tcp_error, _Socket,Reason}, _StateName, State) ->
+    ?WARNING(State,"Snaphot receiving socket error: ~p.",[Reason]),
     {stop, tcp_error, State};
 handle_info({tcp, _, <<0:64, "done">>}, fileinfo, State) ->
     ok = gen_tcp:send(State#state.rsock, ?NEXT_HEARBEAT),
@@ -132,46 +153,51 @@ handle_info({tcp, _, <<0:64, "done">>}, fileinfo, State) ->
 handle_info({tcp, _, MsgData}, fileinfo, State = #state{dir = Dir, rsock = Sock}) ->
     <<Size:64, Name/binary>> = MsgData,
     FName = filename:join(Dir, binary_to_list(Name)),
+    ?INFO(State,"Prepare receive file ~s of size ~p.", [FName, Size]),
     ok = gen_tcp:send(Sock, ?NEXT_HEARBEAT),
     if
         Size == 0 ->
+            ?INFO(State,"Receive ~s direcory has created.", [FName]),
             zraft_util:make_dir(FName),
-            inet:setopts(Sock, [{active, once}]),
+            ok = inet:setopts(Sock, [{active, once}]),
             {next_state, fileinfo, State#state{fd = undefined, size = 0}, ?DATA_TIMEOUT};
         true ->
             case filename:dirname(FName) of
                 "." ->
                     ok;
                 ParentDir ->
-                    zraft_util:make_dir(ParentDir)
+                    ok = zraft_util:make_dir(ParentDir)
             end,
             {ok, FD} = file:open(FName, [binary, write, exclusive, raw, delayed_write]),
-            inet:setopts(Sock, [{active, once}, {packet, 0}]),
-            {next_state, filedata, State#state{fd = FD, size = Size}, ?DATA_TIMEOUT}
+            ok = inet:setopts(Sock, [{active, once}, {packet, 0}]),
+            {next_state, filedata, State#state{fd = FD, size = 0,expected_size = Size, curfile = FName}, ?DATA_TIMEOUT}
     end;
-handle_info({tcp, _, MsgData}, filedata, State = #state{fd = FD, size = Size, rsock = Sock}) ->
+handle_info({tcp, _, MsgData}, filedata,
+    State = #state{fd = FD, size = Size,expected_size = ESize,rsock = Sock, curfile = File}) ->
     ok = file:write(FD, MsgData),
-    NewSize = Size - size(MsgData),
+    NewSize = Size + size(MsgData),
+    ?INFO(State,"Receive ~p of ~p bytes ~s", [NewSize,ESize,File]),
     if
-        NewSize == 0 ->
-            file:datasync(FD),
-            file:close(FD),
+        NewSize == ESize ->
+            ok = file:datasync(FD),
+            ok = file:close(FD),
             inet:setopts(Sock, [{active, once}, {packet, 4}]),
             ok = gen_tcp:send(Sock, ?NEXT_HEARBEAT),
-            {next_state, fileinfo, State#state{fd = undefined, size = 0}, ?DATA_TIMEOUT};
-        NewSize < 0 ->
+            {next_state, fileinfo, State#state{fd = undefined, size = 0, curfile = undefined}, ?DATA_TIMEOUT};
+        NewSize > ESize ->
             file:datasync(FD),
             file:close(FD),
             {stop, {error, invalid_size}, State#state{fd = undefined, size = 0}};
         true ->
-            inet:setopts(Sock, [{active, once}]),
+            ok = inet:setopts(Sock, [{active, once}]),
             {next_state, filedata, State#state{size = NewSize}, ?DATA_TIMEOUT}
     end;
 
 handle_info(_Info, _StateName, State) ->
     {stop, {error, not_supported}, State}.
 
-terminate(_Reason, _StateName, State) ->
+terminate(Reason, _StateName, State) ->
+    ?WARNING(State,"Receiver is being stoped. Reason is ~p",[Reason]),
     close_sock(State#state.rsock),
     close_sock(State#state.lsock),
     if
@@ -190,32 +216,27 @@ close_sock(Sock) ->
 code_change(_OldVsn, StateName, State, _Extra) ->
     {ok, StateName, State, ?DATA_TIMEOUT}.
 
-listen_on(RAddr,IpAddr, State) ->
-    SockOpts = [{ip, IpAddr}, binary, {packet, 0}, {reuseaddr, true}, {keepalive, true}, {backlog, 1024}, {active, false}],
-    ListenerPort = zraft_util:get_env(snapshot_listener_port,0),
+listen_on(RAddr, IpAddr, State) ->
+    SockOpts = [{ip, IpAddr}, binary, {packet, 4}, {reuseaddr, true}, {keepalive, true}, {backlog, 1024}, {active, false}],
+    ListenerPort = zraft_util:get_env(snapshot_listener_port, 0),
     case gen_tcp:listen(ListenerPort, SockOpts) of
         {ok, LSock} ->
             {ok, _Ref} = prim_inet:async_accept(LSock, -1),
             {ok, Port} = inet:port(LSock),
-            {reply, {ok, {RAddr,Port}}, listen, State#state{lsock = LSock}, ?LISTEN_TIMEOUT};
+            {reply, {ok, {RAddr, Port}}, listen, State#state{lsock = LSock}, ?LISTEN_TIMEOUT};
         Err ->
-            lager:error("Can't start snapshot receiver listener on ~p: ~p", [IpAddr, Err]),
+            ?ERROR(State,"Can't start snapshot receiver listener on ~p:~p. Reason is ~p", [IpAddr,ListenerPort,Err]),
             {stop, Err, Err, State}
     end.
 
-copy_to(Dir, Addr, Port) ->
+copy_to(PeerID,Dir, Addr, Port) ->
     Files = copy_info(Dir),
-    copy_files(Files, Addr, Port).
+    copy_files(PeerID,Files, Addr, Port).
 
-copy_files(CopyInfo, Addr, Port) ->
-    Result = (catch copy_files1(CopyInfo,Addr,Port)),
-    discard_files_info(CopyInfo),
-    Result.
-
-copy_files1(CopyInfo, Addr, Port) ->
+copy_files(PeerID,CopyInfo, Addr, Port) ->
     case gen_tcp:connect(Addr, Port, [binary, {active, false}, {packet, 0}, {linger, {true, 30}}]) of
         {ok, Sock} ->
-            Res = do_copy(CopyInfo, Sock),
+            Res = do_copy(PeerID,CopyInfo, Sock),
             Res1 = case Res of
                        ok ->
                            case send_fileinfo(0, "done", Sock) of
@@ -234,36 +255,39 @@ copy_files1(CopyInfo, Addr, Port) ->
     end.
 
 
-do_copy([], _Sock) ->
+do_copy(_PeerID,[], _Sock) ->
     ok;
-do_copy([{File, Size, FD} | T], Sock) ->
-    case copy_file(Size, File, FD, Sock) of
+do_copy(PeerID,[{File, Size, FD} | T], Sock) ->
+    case copy_file(PeerID,Size, File, FD, Sock) of
         ok ->
-            do_copy(T, Sock);
+            do_copy(PeerID,T, Sock);
         Else ->
-            discard_files_info(T),
             Else
     end.
 
-copy_file(Size, File, FD, Sock) ->
+copy_file(PeerID,Size, File, FD, Sock) ->
     Res = case send_fileinfo(Size, File, Sock) of
               ok ->
-                  case file:sendfile(FD, Sock, 0, Size, []) of
+                  ?INFO(PeerID,"Transfer snapshot file ~s of ~p bytes.", [File, Size]),
+                  case catch file:sendfile(FD, Sock, 0, Size, []) of
                       {ok, Size} ->
+                          ?INFO(PeerID,"Snapshot file ~s has been transfered.", [File]),
                           check_next_hearbeat(Sock);
-                      {ok, _} ->
+                      {ok, BadSize} ->
+                          ?INFO(PeerID,"Snapshot file ~s has been transfered wrong number of ~p bytes", [File, BadSize]),
                           {error, less_byte_sended};
                       Else ->
+                          ?ERROR("Snapshot file ~s has failed to transfer. Reason is ~p.", [File, Else]),
                           Else
                   end;
               Else ->
                   Else
           end,
-    file:close(FD),
     Res.
 
 send_fileinfo(Size, File, Sock) ->
-    Packet = <<(length(File) + 8):32, Size:64, (list_to_binary(File))/binary>>,
+    BName = list_to_binary(File),
+    Packet = <<(size(BName) + 8):32, Size:64, BName/binary>>,
     case gen_tcp:send(Sock, Packet) of
         ok ->
             check_next_hearbeat(Sock);
@@ -311,6 +335,11 @@ discard_files_info(Files) ->
     lists:foreach(fun({_, _, FD}) ->
         file:close(FD) end, Files).
 
+print_id(#state{peer_id = ID})->
+    ID;
+print_id(ID)->
+    ID.
+
 -ifdef(TEST).
 setup() ->
     zraft_util:del_dir("test_fs_copy"),
@@ -340,7 +369,7 @@ do_copy() ->
         file:write_file(File2, <<"test2">>),
         CopyTo = "test_fs_copy/copy",
         zraft_util:make_dir(CopyTo),
-        {ok, {{Addr,Port}, _Pid}} = start(CopyTo),
+        {ok, {{Addr, Port}, _Pid}} = start(test,CopyTo),
         {ok, Sock} = gen_tcp:connect(Addr, Port, [binary, {active, false}, {packet, 0}, {linger, {true, 30}}]),
         make_dir_("d1", Sock),
         copy_file_(File1, "d1/test1", Sock),
@@ -384,6 +413,18 @@ copy_fs_test_() ->
         end
     }.
 
+big_fs_test_() ->
+    {
+        setup,
+        fun setup/0,
+        fun clear_setup/1,
+        fun(_X) ->
+            [
+                big_copy_fs()
+            ]
+        end
+    }.
+
 do_copy_fs() ->
     {"copy_fs", fun() ->
         zraft_util:make_dir("test_fs_copy/src/d1"),
@@ -396,10 +437,10 @@ do_copy_fs() ->
         file:write_file(File0, <<"test0">>),
         CopyTo = "test_fs_copy/copy",
         zraft_util:make_dir(CopyTo),
-        {ok, {{Addr,Port}, _Pid}} = start(CopyTo),
+        {ok, {{Addr, Port}, _Pid}} = start(test,CopyTo),
         Files = copy_info("test_fs_copy/src"),
         ok = file:rename("test_fs_copy/src", "test_fs_copy/src1"),
-        Res = copy_files(Files, Addr, Port),
+        Res = copy_files(test,Files, Addr, Port),
         ?assertEqual(ok, Res),
         C1 = file:read_file("test_fs_copy/copy/d1/test1"),
         ?assertMatch({ok, <<"test1">>}, C1),
@@ -407,6 +448,23 @@ do_copy_fs() ->
         ?assertMatch({ok, <<"test2">>}, C2),
         C0 = file:read_file("test_fs_copy/copy/test0"),
         ?assertMatch({ok, <<"test0">>}, C0)
-
     end}.
+
+
+big_copy_fs() ->
+    {"copy big file", fun() ->
+        zraft_util:make_dir("test_fs_copy/src/d1"),
+        File1 = "test_fs_copy/src/d1/test1",
+        {ok, FD} = file:open(File1, [binary, raw, write]),
+        lists:foreach(fun(I) ->
+            ok = file:write(FD, <<I:64>>) end, lists:seq(1, 1024)),
+        CopyTo = "test_fs_copy/copy",
+        zraft_util:make_dir(CopyTo),
+        {ok, {{Addr, Port}, _Pid}} = start(test,CopyTo),
+        Files = copy_info("test_fs_copy/src"),
+        Res = copy_files(test,Files, Addr, Port),
+        discard_files_info(Files),
+        ?assertEqual(ok,Res)
+    end}.
+
 -endif.
