@@ -72,6 +72,7 @@
     query_local/3,
     get_conf/2,
     write/3,
+    write_async/2,
     truncate_log/2,
     set_new_configuration/4,
     stat/1
@@ -116,6 +117,7 @@
 -record(read_request_local, {function, args}).
 -record(conf_change_requet, {prev_id, start_time, timeout, from, peers, index}).
 -record(write_request, {data, start_time, timeout, from}).
+-record(aysnc_write_request, {data}).
 -type raft_term() :: non_neg_integer().
 -type index() :: non_neg_integer().
 -type peer_name() :: atom().
@@ -157,6 +159,12 @@ write(PeerID, Data, Timeout) ->
     Now = os:timestamp(),
     Req = #write_request{timeout = zraft_util:miscrosec_timeout(Timeout), data = Data, start_time = Now},
     gen_fsm:sync_send_all_state_event(PeerID, Req, Timeout).
+
+%% @doc Async write data to user backend
+-spec write_async(peer_id(), term()) -> ok.
+write_async(PeerID, Data) ->
+    Req = #aysnc_write_request{data = Data},
+    gen_fsm:send_all_state_event(PeerID, Req).
 
 %% @doc Write data to user backend
 -spec set_new_configuration(peer_id(), index(), list(peer_id()), timeout()) -> ok|{leader, peer_id()}|{error, term()}.
@@ -348,7 +356,7 @@ candidate(R = #vote_reply{peer_term = Term1, commit = CommitIndex},
         [R#vote_reply.from_peer, Term1, Term2]),
     case maybe_shutdown(CommitIndex, State) of
         true ->
-            {stop, nornal, State};
+            {stop, normal, State};
         _ ->
             step_down(candidate, Term1, State)
     end;
@@ -457,6 +465,18 @@ handle_event({sync_peer, _}, leader, State) ->
 handle_event({sync_peer, _MayBeCommit}, StateName, State) ->
     %%We already lost leadership
     {next_state, StateName, State};
+handle_event(#aysnc_write_request{data = Data}, leader,
+    State = #state{log_state = LogState, current_term = Term}) ->
+    %%Try replicate new entry.
+    %%Response will be sended after entry will be ready to commit
+    #log_descr{last_index = I} = LogState,
+    NextIndex = I + 1,
+    Entry = #enrty{term = Term, index = NextIndex, type = ?OP_DATA, data = Data},
+    State1 = append([Entry], State),
+    {next_state, leader, State1};
+handle_event(#aysnc_write_request{}, StateName, State) ->
+    %%Ignore request
+    {next_state,StateName, State};
 handle_event(_Event, StateName, State) ->
     {next_state, StateName, State}.
 
@@ -567,13 +587,18 @@ handle_sync_event(#conf_change_requet{}, _From, StateName, State) ->
 %%% JUST FOR TESTS
 %%%===================================================================
 handle_sync_event(force_timeout, From, StateName, State) ->
-    if
-        State#state.timer == undefined ->
+    case State of
+        #init_state{}->
             {reply, false, StateName, State};
-        true ->
-            gen_fsm:cancel_timer(State#state.timer),
-            gen_fsm:reply(From, true),
-            ?MODULE:StateName(timeout, State#state{timer = undefined})
+        _->
+            if
+                State#state.timer == undefined ->
+                    {reply, false, StateName, State};
+                true ->
+                    gen_fsm:cancel_timer(State#state.timer),
+                    gen_fsm:reply(From, true),
+                    ?MODULE:StateName(timeout, State#state{timer = undefined})
+            end
     end;
 
 %% drop unknown
@@ -722,7 +747,7 @@ handle_vote_reuqest(StateName, Req, State) ->
                                  undefined
                          end,
             if
-                CurrentTerm < NewTerm ->
+                CurrentTerm > NewTerm ->
                     reject_vote(StateName, Req, State);
                 CurrentTerm == NewTerm andalso OldVote =/= undefined ->
                     %%We have voted for this term or we are candidate for it(have self vote).
@@ -878,8 +903,6 @@ reject_append(Req, State) ->
     zraft_peer_route:reply_proxy(From, Reply).
 
 append_entries(Req, State = #state{log = Log, current_term = Term, id = PeerID}) ->
-    State1 = start_timer(State),
-    CurrentTime = os:timestamp(),
     #append_entries{
         epoch = Epoch,
         from = From,
@@ -899,22 +922,27 @@ append_entries(Req, State = #state{log = Log, current_term = Term, id = PeerID})
         request_ref = Ref,
         epoch = Epoch
     },
-    State2 = State1#state{log_state = LogState, last_hearbeat = CurrentTime},
+    State1 = State#state{log_state = LogState},
     case Result of
         {true, _LastIndex, ToCommit} ->
-            zraft_fsm:apply_commit(State2#state.state_fsm, ToCommit),
-            State3 = set_config(follower, NewConf, State2),
+            zraft_fsm:apply_commit(State1#state.state_fsm, ToCommit),
+            State2 = set_config(follower, NewConf, State1),
             Reply1 = Reply#append_reply{success = true};
         {false, _} ->
-            State3 = State2,
+            State2 = State1,
             Reply1 = Reply
     end,
     zraft_peer_route:reply_proxy(From, Reply1),
+    CurrentTime = os:timestamp(),
+    State3 = start_timer(State2#state{last_hearbeat = CurrentTime}),
     {next_state, follower, State3}.
 
 start_election(State =
     #state{leader = Leader, epoch = Epoch, current_term = Term, id = PeerID, log = Log, back_end = BackEnd, log_state = LogState}) ->
     NextTerm = Term + 1,
+    #log_descr{last_index = LastIndex, last_term = LastTerm} = LogState,
+    VoteRequest = #vote_request{epoch = Epoch, term = NextTerm, from = peer(PeerID), last_index = LastIndex, last_term = LastTerm},
+    to_all_peer_direct(VoteRequest, State),
     Leader /= undefined andalso
         ?INFO(State,"Start for election in term ~p old leader was ~p", [NextTerm, Leader]),
     ok = zraft_fs_log:update_raft_meta(
@@ -922,7 +950,6 @@ start_election(State =
         #raft_meta{voted_for = PeerID, back_end = BackEnd, current_term = NextTerm}
     ),
     #log_descr{last_index = LastIndex, last_term = LastTerm} = LogState,
-    VoteRequest = #vote_request{epoch = Epoch, term = NextTerm, from = peer(PeerID), last_index = LastIndex, last_term = LastTerm},
     update_all_peer(
         fun
             (P = #peer{id = ProxyPeer}) when ProxyPeer == PeerID ->
@@ -931,7 +958,6 @@ start_election(State =
                 P#peer{has_vote = false}
         end, State),
 
-    to_all_peer_direct(VoteRequest, State),
     State1 = start_timer(State),
     maybe_become_leader(
         candidate,

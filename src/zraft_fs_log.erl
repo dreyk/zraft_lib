@@ -340,7 +340,7 @@ preappend(_Commited, [], []) ->
     false.
 
 truncate_segment_before(Snaphot=#snapshot_info{index = Commit},
-    FS = #fs{open_segment = Open, closed_segments = Closed, configs = Conf1}) ->
+    FS = #fs{open_segment = Open, closed_segments = Closed, configs = Conf1,commit = OldCommitIndex}) ->
     Last = Open#segment.last_index,
     FS2 = if
               Last =< Commit ->
@@ -362,7 +362,8 @@ truncate_segment_before(Snaphot=#snapshot_info{index = Commit},
           end,
     Conf2 = truncate_conf_before(Commit, Conf1),
     LastConf = last_conf(Snaphot,Conf2),
-    FS3 = FS2#fs{first_index = Commit + 1, configs = Conf2, last_conf = LastConf,snapshot_info = Snaphot},
+    NewCommitIndex = max(OldCommitIndex,Commit),
+    FS3 = FS2#fs{first_index = Commit + 1,commit = NewCommitIndex, configs = Conf2, last_conf = LastConf,snapshot_info = Snaphot},
     FS4 = update_metadata(FS3),
     update_metadata(FS4).
 
@@ -1154,7 +1155,7 @@ snaphost_on_commit() ->
         ),
         File1 = test_log_file_name("6-6.rlog"),
         {ok,OpRes,Log3} = handle_command({truncate_before,#snapshot_info{index = 5}}, Log2),
-        check_snaphost_result(6,7,3,0,{7, <<"e">>},OpRes),
+        check_snaphost_result(6,7,3,5,{7, <<"e">>},OpRes),
         ?assertMatch(
             #fs{
                 fcounter = 5,
@@ -1203,7 +1204,7 @@ snaphost_on_commit_all() ->
         Log = load_fs({test, node()}),
         {ok, _, Log1} = handle_command({append, 0, 0, 0, ?INITIAL_ENTRY}, Log),
         {ok,OpRes, Log2} = handle_command({truncate_before, #snapshot_info{index = 7}}, Log1),
-        check_snaphost_result(8,7,8,0,?BLANK_CONF,OpRes),
+        check_snaphost_result(8,7,8,7,?BLANK_CONF,OpRes),
         ?assertMatch(
             #fs{
                 fcounter = 5,

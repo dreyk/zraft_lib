@@ -307,7 +307,7 @@ handle_info(_, State) ->
     {noreply, State}.
 
 terminate(Reason, State=#state{snapshot_progres = Progress}) ->
-    ?WARNING(State,"Proxy is being stoped ~p",[Reason]),
+    Reason==normal orelse ?WARNING(State,"Proxy is being stoped ~p",[Reason]),
     if
         Progress == undefined ->
             ok;
