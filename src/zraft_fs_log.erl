@@ -110,11 +110,11 @@ max_segment_size() ->
 get_raft_meta(FS) ->
     gen_server:call(FS, {get, #fs.raft_meta}).
 
--spec update_raft_meta(logger(),zraft_consensus:raft_meta())->ok.
+-spec update_raft_meta(logger(), zraft_consensus:raft_meta()) -> ok.
 update_raft_meta(FS, Meta) ->
     gen_server:call(FS, {raft_meta, Meta}).
-update_commit_index(FS,Commit)->
-    gen_server:call(FS, {update_commit_index,Commit}).
+update_commit_index(FS, Commit) ->
+    gen_server:call(FS, {update_commit_index, Commit}).
 
 get_term(FS, Index) ->
     gen_server:call(FS, {get_term, Index}).
@@ -124,16 +124,16 @@ get_log_descr(FS) ->
     gen_server:call(FS, {get, log_descr}).
 get_entries(FS, From, To) ->
     gen_server:call(FS, {get_entries, From, To}).
-replicate_log(FS,ToPeer,Req) ->
-    gen_server:cast(FS, {replicate_log,ToPeer,Req}).
+replicate_log(FS, ToPeer, Req) ->
+    gen_server:cast(FS, {replicate_log, ToPeer, Req}).
 
 stop(FS) ->
     gen_server:call(FS, stop).
 
-make_snapshot_info(FS,From,Index)->
-    async_work(FS,From,{make_snapshot_info,Index}).
+make_snapshot_info(FS, From, Index) ->
+    async_work(FS, From, {make_snapshot_info, Index}).
 
-truncate_before(FS,SnapshotInfo) ->
+truncate_before(FS, SnapshotInfo) ->
     async_work(FS, {truncate_before, SnapshotInfo}).
 
 append(FS, PrevIndex, PrevTerm, ToCommitIndex, Entries) ->
@@ -144,11 +144,11 @@ append_leader(FS, Entries) ->
 
 async_work(FS, Command) ->
     Ref = make_ref(),
-    async_work(FS,{Ref, self()},Command),
+    async_work(FS, {Ref, self()}, Command),
     Ref.
 
-async_work(FS,From, Command) ->
-    gen_server:cast(FS, {command,From,Command}).
+async_work(FS, From, Command) ->
+    gen_server:cast(FS, {command, From, Command}).
 
 sync_fs(Sync) ->
     receive
@@ -160,8 +160,8 @@ start_link(PeerID) ->
     gen_server:start_link(?MODULE, [PeerID], []).
 
 init([PeerID]) ->
-    gen_server:cast(self(),{init,PeerID}),
-    {ok,loading}.
+    gen_server:cast(self(), {init, PeerID}),
+    {ok, loading}.
 
 load_fs(PeerID) ->
     PeerDir = filename:join([?DATA_DIR, zraft_util:peer_name(PeerID)]),
@@ -187,7 +187,7 @@ handle_call({raft_meta, Meta}, _From, State) ->
     {reply, ok, State2};
 handle_call({get, log_descr}, _From, State) ->
     Res = log_descr(State),
-    {reply,Res, State};
+    {reply, Res, State};
 handle_call({get_term, Index}, _From, State) ->
     Val = term_at(Index, State),
     {reply, Val, State};
@@ -197,10 +197,10 @@ handle_call({get_entries, From, To}, _From, State) ->
 handle_call({get, Index}, _From, State) ->
     Val = erlang:element(Index, State),
     {reply, Val, State};
-handle_call({update_commit_index,Commit}, _From, State) ->
-    ToCommit = entries(State#fs.commit+1,Commit,State),
+handle_call({update_commit_index, Commit}, _From, State) ->
+    ToCommit = entries(State#fs.commit + 1, Commit, State),
     State1 = State#fs{commit = Commit},
-    {ok,Val,State2} = make_result(ToCommit,State1),
+    {ok, Val, State2} = make_result(ToCommit, State1),
     {reply, Val, State2};
 handle_call(stop, _From, State) ->
     {stop, normal, ok, State};
@@ -208,12 +208,12 @@ handle_call(stop, _From, State) ->
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
-handle_cast({init,PeerID},loading) ->
+handle_cast({init, PeerID}, loading) ->
     State = load_fs(PeerID),
-    {noreply,State};
+    {noreply, State};
 
-handle_cast({replicate_log,ToPeer,Req}, State) ->
-    handle_replicate_log(ToPeer,Req,State),
+handle_cast({replicate_log, ToPeer, Req}, State) ->
+    handle_replicate_log(ToPeer, Req, State),
     {noreply, State};
 handle_cast({command, From, Cmd}, State) ->
     {ok, Reply, State1} = handle_command(Cmd, State),
@@ -228,30 +228,30 @@ handle_info(_Info, State) ->
 terminate(_Reason, #fs{open_segment = Open} = FS) ->
     close_segment(Open, FS),
     ok;
-terminate(_Reason,_) ->
+terminate(_Reason, _) ->
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-log_descr(#fs{last_index = L, first_index = F, last_term = T,commit = C}) ->
-    #log_descr{last_index = L, first_index = F, last_term = T,commit_index = C}.
+log_descr(#fs{last_index = L, first_index = F, last_term = T, commit = C}) ->
+    #log_descr{last_index = L, first_index = F, last_term = T, commit_index = C}.
 
-handle_command({make_snapshot_info,Index}, State) ->
-    Res = make_snapshot_info(Index,State),
-    {ok,Res,State};
+handle_command({make_snapshot_info, Index}, State) ->
+    Res = make_snapshot_info(Index, State),
+    {ok, Res, State};
 handle_command({truncate_before, SnapshotInfo}, State) ->
     State1 = truncate_segment_before(SnapshotInfo, State),
-    make_result(ok,State1);
+    make_result(ok, State1);
 handle_command({append, PrevIndex, PrevTerm, ToCommitIndex, Entries}, State) ->
-    {ok,Result,State1}=append_entry(PrevIndex, PrevTerm, ToCommitIndex, Entries, State),
-    make_result(Result,State1);
+    {ok, Result, State1} = append_entry(PrevIndex, PrevTerm, ToCommitIndex, Entries, State),
+    make_result(Result, State1);
 handle_command({append_leader, Entries}, State) ->
     State1 = append(Entries, State),
-    make_result(ok,State1).
+    make_result(ok, State1).
 
-make_result(Result,State=#fs{last_conf = Conf})->
-    {ok,#log_op_result{last_conf = Conf,log_state = log_descr(State),result = Result},State}.
+make_result(Result, State = #fs{last_conf = Conf}) ->
+    {ok, #log_op_result{last_conf = Conf, log_state = log_descr(State), result = Result}, State}.
 
 append_entry(PrevIndex, _PrevTerm, _ToCommitIndex, _Entries, State = #fs{last_index = LastIndex})
     when PrevIndex > LastIndex ->
@@ -337,8 +337,8 @@ preappend(_Commited, [], []) ->
     %%all entry already exists in log.
     false.
 
-truncate_segment_before(Snaphot=#snapshot_info{index = Commit},
-    FS = #fs{open_segment = Open, closed_segments = Closed, configs = Conf1,commit = OldCommitIndex}) ->
+truncate_segment_before(Snaphot = #snapshot_info{index = Commit},
+    FS = #fs{open_segment = Open, closed_segments = Closed, configs = Conf1, commit = OldCommitIndex}) ->
     Last = Open#segment.last_index,
     FS2 = if
               Last =< Commit ->
@@ -348,9 +348,9 @@ truncate_segment_before(Snaphot=#snapshot_info{index = Commit},
                   delete_segment(Open),
                   {NewSegment, FS1} = new_segment(Commit + 1, FS),
                   LastTerm = if
-                                 Last==Commit->
+                                 Last == Commit ->
                                      FS#fs.last_term;
-                                 true->
+                                 true ->
                                      0
                              end,
                   FS1#fs{open_segment = NewSegment, closed_segments = [], last_index = Commit, last_term = LastTerm};
@@ -359,9 +359,9 @@ truncate_segment_before(Snaphot=#snapshot_info{index = Commit},
                   truncate_segments_before(Commit, FS, [Open | Closed], [])
           end,
     Conf2 = truncate_conf_before(Commit, Conf1),
-    LastConf = last_conf(Snaphot,Conf2),
-    NewCommitIndex = max(OldCommitIndex,Commit),
-    FS3 = FS2#fs{first_index = Commit + 1,commit = NewCommitIndex, configs = Conf2, last_conf = LastConf,snapshot_info = Snaphot},
+    LastConf = last_conf(Snaphot, Conf2),
+    NewCommitIndex = max(OldCommitIndex, Commit),
+    FS3 = FS2#fs{first_index = Commit + 1, commit = NewCommitIndex, configs = Conf2, last_conf = LastConf, snapshot_info = Snaphot},
     FS4 = update_metadata(FS3),
     update_metadata(FS4).
 
@@ -398,7 +398,7 @@ truncate_segment_after(Index, FS = #fs{open_segment = Open, closed_segments = Cl
             %%else open segment will be split or deleted
             FS1 = truncate_segments_after(FS, Index, [Open | Closed]),
             NewConfigs = truncate_conf_after(Index, FS#fs.configs),
-            FS1#fs{configs = NewConfigs, last_conf = last_conf(FS#fs.snapshot_info,NewConfigs)}
+            FS1#fs{configs = NewConfigs, last_conf = last_conf(FS#fs.snapshot_info, NewConfigs)}
     end.
 truncate_segments_after(FS, Index, [#segment{firt_index = First} = S | T]) when First >= Index ->
     %%delte segment
@@ -434,7 +434,7 @@ delete_segment(#segment{fname = Name, fd = Fd}) ->
 set_segment_first_index(Index, #segment{last_index = L} = S) when Index > L ->
     S#segment{entries = [], firt_index = Index};
 set_segment_first_index(Index, #segment{entries = Log} = S) ->
-    Log1 = truncate_log_before(Index-1, Log),
+    Log1 = truncate_log_before(Index - 1, Log),
     S#segment{entries = Log1, firt_index = Index}.
 
 truncate_log_before(C, [#enrty{index = I} = E | T]) when I > C ->
@@ -522,7 +522,7 @@ append(Entries,
 
 append_entries(_Index, [], Open = #segment{fd = FD}, FS, Acc, LogAcc, ConfAcc) ->
     ok = file:datasync(FD),
-    LastConf = last_conf(FS#fs.snapshot_info,ConfAcc),
+    LastConf = last_conf(FS#fs.snapshot_info, ConfAcc),
     [#enrty{index = LastIndex, term = LastTerm} | _] = LogAcc,
     FS#fs{
         last_index = LastIndex,
@@ -539,7 +539,7 @@ append_entries(Index, [#enrty{index = Index0, data = Data, type = Type, term = T
         true ->
             exit({error, index_mismach, Index, Index0})
     end,
-    DataBytes = term_to_binary({Index, Term, Type, Data}),
+    DataBytes = <<Index:64, Term:64, Type:8, (term_to_binary(Data))/binary>>,
     Crs = erlang:crc32(DataBytes),
     DataSize = size(DataBytes),
     Buffer = <<?RECORD_START:8, Crs:32, DataSize:32, DataBytes/binary>>,
@@ -582,7 +582,7 @@ load_segments_data(Index, [], FS, SegmentAcc, ConfAcc) ->
                                     [#enrty{index = LI, term = LT} | _] = Log,
                                     {LI, LT}
                             end,
-    LastConf = last_conf(FS#fs.snapshot_info,ConfAcc),
+    LastConf = last_conf(FS#fs.snapshot_info, ConfAcc),
     FS1#fs{
         closed_segments = SegmentAcc,
         open_segment = NewSegment,
@@ -732,17 +732,28 @@ read_entry(PIndex, Lo, Hi, Crs, Size, FD) ->
             BufferCrs = erlang:crc32(Buffer),
             if
                 BufferCrs == Crs ->
-                    case catch binary_to_term(Buffer) of
-                        {Index, _Term, _Type, _Data} when Index < Lo ->
+                    case Buffer of
+                        <<Index:64, _Term:64, _Type:8, _BData/binary>> when Index < Lo ->
                             next;
-                        {Index, Term, Type, Data} when Index == Hi andalso Index == PIndex ->
-                            {stop, #enrty{index = Index, type = Type, data = Data, term = Term}};
-                        {Index, Term, Type, Data} when Index == PIndex ->
-                            {next, #enrty{index = Index, type = Type, data = Data, term = Term}};
-                        {_Index, _, _, _} ->
+                        <<Index:64, Term:64, Type:8, BData/binary>> when Index == Hi andalso Index == PIndex ->
+                            case catch binary_to_term(BData) of
+                                {'EXIT', Error} ->
+                                    {error, Error};
+                                Data ->
+                                    {stop, #enrty{index = Index, type = Type, data = Data, term = Term}}
+                            end;
+                        <<Index:64, Term:64, Type:8, BData/binary>> when Index == PIndex ->
+                            case catch binary_to_term(BData) of
+                                {'EXIT', Error} ->
+                                    {error, Error};
+                                Data ->
+                                    {next, #enrty{index = Index, type = Type, data = Data, term = Term}}
+                            end;
+                        <<_Index:64, _/binary>> ->
                             {error, index_sequence_error};
-                        Else ->
-                            {error, Else}
+                        _Else ->
+                            {error, currupted_record}
+
                     end;
                 true ->
                     {error, check_crs32_fail}
@@ -824,7 +835,7 @@ entries2(Lo, Hi, [E | T], Acc) ->
 
 term_at(Index, #fs{last_index = Index, last_term = Term}) ->
     Term;
-term_at(Index, #fs{snapshot_info = #snapshot_info{index = Index,term = Term}}) ->
+term_at(Index, #fs{snapshot_info = #snapshot_info{index = Index, term = Term}}) ->
     Term;
 term_at(Index, #fs{last_index = Hi, first_index = Lo}) when Index < Lo orelse Index > Hi ->
     0;
@@ -842,16 +853,16 @@ is_safe_trunctate(_, _) ->
     lager:error("Should never truncate committed entries"),
     exit({error, commit_collision}).
 
-last_conf(#snapshot_info{conf = SConf,conf_index = SI},Configs)->
+last_conf(#snapshot_info{conf = SConf, conf_index = SI}, Configs) ->
     case last_conf(Configs) of
-        ?BLANK_CONF->
+        ?BLANK_CONF ->
             if
-                SI==0->
+                SI == 0 ->
                     ?BLANK_CONF;
-                true->
-                    {SI,SConf}
+                true ->
+                    {SI, SConf}
             end;
-        Last->
+        Last ->
             Last
     end.
 last_conf([E | _]) ->
@@ -859,25 +870,25 @@ last_conf([E | _]) ->
 last_conf([]) ->
     ?BLANK_CONF.
 
-last_conf_before(Index,#snapshot_info{conf = SConf,conf_index = SI},Configs)->
-    case last_conf_before(Index,Configs) of
-        ?BLANK_CONF->
+last_conf_before(Index, #snapshot_info{conf = SConf, conf_index = SI}, Configs) ->
+    case last_conf_before(Index, Configs) of
+        ?BLANK_CONF ->
             if
-                SI>Index->
+                SI > Index ->
                     ?BLANK_CONF;
-                SI==0->
+                SI == 0 ->
                     ?BLANK_CONF;
-                true->
-                    {SI,SConf}
+                true ->
+                    {SI, SConf}
             end;
-        Last->
+        Last ->
             Last
     end.
-last_conf_before(Index,[{I,_} | T]) when I>Index ->
-    last_conf_before(Index,T);
-last_conf_before(_Index,[E | _T]) ->
+last_conf_before(Index, [{I, _} | T]) when I > Index ->
+    last_conf_before(Index, T);
+last_conf_before(_Index, [E | _T]) ->
     E;
-last_conf_before(_Index,[]) ->
+last_conf_before(_Index, []) ->
     ?BLANK_CONF.
 
 truncate_conf_after(Index, [{ID, _} | T]) when ID >= Index ->
@@ -885,86 +896,86 @@ truncate_conf_after(Index, [{ID, _} | T]) when ID >= Index ->
 truncate_conf_after(_Index, Configs) ->
     Configs.
 
-handle_replicate_log(ToPeer,Req,State) ->
+handle_replicate_log(ToPeer, Req, State) ->
     PrevIndex = Req#append_entries.prev_log_index,
     NextIndex = PrevIndex + 1,
     #fs{first_index = FirstIndex} = State,
     if
         FirstIndex > NextIndex ->
-            need_snapshot(Req,State);
+            need_snapshot(Req, State);
         true ->
             case term_at(PrevIndex, State) of
-                0 when PrevIndex==0 andalso FirstIndex==1->
-                    handle_replicate_log(ToPeer,NextIndex,0,Req,State);
+                0 when PrevIndex == 0 andalso FirstIndex == 1 ->
+                    handle_replicate_log(ToPeer, NextIndex, 0, Req, State);
                 0 ->
-                    need_snapshot(Req,State);
+                    need_snapshot(Req, State);
                 PrevTerm ->
-                    handle_replicate_log(ToPeer,NextIndex,PrevTerm,Req,State)
+                    handle_replicate_log(ToPeer, NextIndex, PrevTerm, Req, State)
             end
     end.
 
-need_snapshot(Req,#fs{peer_id = Peer})->
-    #append_entries{from = From,request_ref = Ref} = Req,
-    NewReq = #install_snapshot{from = From,request_ref = Ref,data=prepare},
-    zraft_consensus:need_snapshot(Peer,NewReq).
+need_snapshot(Req, #fs{peer_id = Peer}) ->
+    #append_entries{from = From, request_ref = Ref} = Req,
+    NewReq = #install_snapshot{from = From, request_ref = Ref, data = prepare},
+    zraft_consensus:need_snapshot(Peer, NewReq).
 
-handle_replicate_log(ToPeer,NextIndex,PrevTerm,Req=#append_entries{entries = false},State)->
-    Commit = min(State#fs.commit,NextIndex-1),
-    Req1 = Req#append_entries{commit_index = Commit,entries = [],prev_log_term = PrevTerm},
+handle_replicate_log(ToPeer, NextIndex, PrevTerm, Req = #append_entries{entries = false}, State) ->
+    Commit = min(State#fs.commit, NextIndex - 1),
+    Req1 = Req#append_entries{commit_index = Commit, entries = [], prev_log_term = PrevTerm},
     zraft_peer_route:cmd(ToPeer, Req1);
-handle_replicate_log(ToPeer,NextIndex,PrevTerm,Req,State)->
-    Entries = entries(NextIndex,State#fs.last_index, State),
+handle_replicate_log(ToPeer, NextIndex, PrevTerm, Req, State) ->
+    Entries = entries(NextIndex, State#fs.last_index, State),
     case Entries of
-        [#enrty{index = NextIndex}|_]->
+        [#enrty{index = NextIndex} | _] ->
             ok;
-        [#enrty{index = NextIndex1}|_]->
-            exit({error,{NextIndex1,'=/=',NextIndex}});
-        _->
+        [#enrty{index = NextIndex1} | _] ->
+            exit({error, {NextIndex1, '=/=', NextIndex}});
+        _ ->
             ok
     end,
-    Commit = min(State#fs.commit,NextIndex-1+length(Entries)),
-    Req1 = Req#append_entries{commit_index = Commit,entries = Entries,prev_log_term = PrevTerm},
+    Commit = min(State#fs.commit, NextIndex - 1 + length(Entries)),
+    Req1 = Req#append_entries{commit_index = Commit, entries = Entries, prev_log_term = PrevTerm},
     zraft_peer_route:cmd(ToPeer, Req1).
 
-make_snapshot_info(Index,#fs{peer_id = ID,commit = Commit}) when Commit<Index->
-    lager:error("~p: Attempt to make snapshot uncommited index ~p",[ID,Index]),
-    {error,invalid_index};
+make_snapshot_info(Index, #fs{peer_id = ID, commit = Commit}) when Commit < Index ->
+    lager:error("~p: Attempt to make snapshot uncommited index ~p", [ID, Index]),
+    {error, invalid_index};
 make_snapshot_info(Index,
-    State=#fs{peer_id = ID,snapshot_info = LastSnapshot,configs = Configs})->
+    State = #fs{peer_id = ID, snapshot_info = LastSnapshot, configs = Configs}) ->
     if
-        Index==0->
-            lager:warning("~p: Attempt to make snapshot for empty log",[ID]),
+        Index == 0 ->
+            lager:warning("~p: Attempt to make snapshot for empty log", [ID]),
             Term = 0;
-        Index==LastSnapshot#snapshot_info.index->
-            lager:warning("~p: Attempt to make snapshot where we already have one",[ID]),
+        Index == LastSnapshot#snapshot_info.index ->
+            lager:warning("~p: Attempt to make snapshot where we already have one", [ID]),
             Term = LastSnapshot#snapshot_info.term;
-        true->
-            case term_at(Index,State) of
-                0->
-                    lager:warning("~p: Attempt to make snapshot for already discarded log",[ID]),
+        true ->
+            case term_at(Index, State) of
+                0 ->
+                    lager:warning("~p: Attempt to make snapshot for already discarded log", [ID]),
                     Term = 0;
-                Tmp1->
+                Tmp1 ->
                     Term = Tmp1
             end
     end,
-    case last_conf_before(Index,State#fs.snapshot_info,Configs) of
-        ?BLANK_CONF->
+    case last_conf_before(Index, State#fs.snapshot_info, Configs) of
+        ?BLANK_CONF ->
             ConfIndex = 0,
             Conf = ?BLANK_CONF;
-        {I1,V1}->
+        {I1, V1} ->
             ConfIndex = I1,
             Conf = V1
     end,
-    #snapshot_info{term = Term,index = Index,conf = Conf,conf_index = ConfIndex}.
+    #snapshot_info{term = Term, index = Index, conf = Conf, conf_index = ConfIndex}.
 
 -ifdef(TEST).
 setup_log() ->
     zraft_util:set_test_dir("test-log"),
-    application:set_env(zraft_lib,max_segment_size,73),
+    application:set_env(zraft_lib, max_segment_size, 100),%%3 entry per log
     ok.
 stop_log(_) ->
     zraft_util:clear_test_dir("test-log"),
-    application:unset_env(zraft_lib,max_segment_size),
+    application:unset_env(zraft_lib, max_segment_size),
     ok.
 
 -define(INITIAL_ENTRY, [
@@ -1001,7 +1012,7 @@ fs_log_test_() ->
 check_max_size() ->
     {"max size", fun() ->
         Max = max_segment_size(),
-        ?assertEqual(73, Max)
+        ?assertEqual(100, Max)
     end}.
 
 new_append() ->
@@ -1009,8 +1020,8 @@ new_append() ->
         zraft_util:del_dir(?DATA_DIR),
         Log = load_fs({test, node()}),
         LogEntriesTest = ?INITIAL_ENTRY,
-        {ok,OpRes, Log1} = handle_command({append, 0, 0, 0, LogEntriesTest}, Log),
-        check_op_result(1,7,8,0,{7, <<"g">>},OpRes),
+        {ok, OpRes, Log1} = handle_command({append, 0, 0, 0, LogEntriesTest}, Log),
+        check_op_result(1, 7, 8, 0, {7, <<"g">>}, OpRes),
         File1 = test_log_file_name("1-3.rlog"),
         File2 = test_log_file_name("4-6.rlog"),
         Configs = lists:reverse(
@@ -1063,11 +1074,11 @@ append_truncate1() ->
         zraft_util:del_dir(?DATA_DIR),
         Log = load_fs({test, node()}),
         {ok, _, Log1} = handle_command({append, 0, 0, 0, ?INITIAL_ENTRY}, Log),
-        {ok,OpRes, Log2} = handle_command(
+        {ok, OpRes, Log2} = handle_command(
             {append, 7, 8, 0, [#enrty{index = 5, term = 3, data = <<"e">>, type = ?OP_CONFIG}]},
             Log1
         ),
-        check_op_result(1,5,3,0,{5, <<"e">>},OpRes),
+        check_op_result(1, 5, 3, 0, {5, <<"e">>}, OpRes),
         File1 = test_log_file_name("1-3.rlog"),
         File2 = test_log_file_name("4-4.rlog"),
         Configs = lists:reverse(
@@ -1127,7 +1138,7 @@ append_truncate2() ->
             {append, 7, 8, 0, [#enrty{index = 7, term = 3, data = <<"e">>, type = ?OP_CONFIG}]},
             Log1
         ),
-        check_op_result(1,7,3,0,{7, <<"e">>},OpRes),
+        check_op_result(1, 7, 3, 0, {7, <<"e">>}, OpRes),
         File1 = test_log_file_name("1-3.rlog"),
         File2 = test_log_file_name("4-6.rlog"),
         ?assertMatch(
@@ -1162,8 +1173,8 @@ snaphost_on_commit() ->
             Log1
         ),
         File1 = test_log_file_name("6-6.rlog"),
-        {ok,OpRes,Log3} = handle_command({truncate_before,#snapshot_info{index = 5}}, Log2),
-        check_snaphost_result(6,7,3,5,{7, <<"e">>},OpRes),
+        {ok, OpRes, Log3} = handle_command({truncate_before, #snapshot_info{index = 5}}, Log2),
+        check_snaphost_result(6, 7, 3, 5, {7, <<"e">>}, OpRes),
         ?assertMatch(
             #fs{
                 fcounter = 5,
@@ -1211,8 +1222,8 @@ snaphost_on_commit_all() ->
         zraft_util:del_dir(?DATA_DIR),
         Log = load_fs({test, node()}),
         {ok, _, Log1} = handle_command({append, 0, 0, 0, ?INITIAL_ENTRY}, Log),
-        {ok,OpRes, Log2} = handle_command({truncate_before, #snapshot_info{index = 7}}, Log1),
-        check_snaphost_result(8,7,8,7,?BLANK_CONF,OpRes),
+        {ok, OpRes, Log2} = handle_command({truncate_before, #snapshot_info{index = 7}}, Log1),
+        check_snaphost_result(8, 7, 8, 7, ?BLANK_CONF, OpRes),
         ?assertMatch(
             #fs{
                 fcounter = 5,
@@ -1314,7 +1325,7 @@ server_log() ->
         {ok, FS} = start_link({test, node()}),
         Sync = append(FS, 0, 0, 0, ?INITIAL_ENTRY),
         OpRes = sync_fs(Sync),
-        check_op_result(1,7,8,0,{7, <<"g">>},OpRes),
+        check_op_result(1, 7, 8, 0, {7, <<"g">>}, OpRes),
         R1 = update_raft_meta(FS, new_raft_meta),
         ?assertEqual(ok, R1),
         #log_descr{last_index = R2, first_index = R3} = get_log_descr(FS),
@@ -1347,7 +1358,7 @@ check_op_result(
         log_state = LogState,
         result = Res,
         last_conf = LastConf
-    })->
+    }) ->
     ?assertMatch(
         {
             true,
@@ -1357,7 +1368,7 @@ check_op_result(
         Res
     ),
     ?assertMatch(
-        #log_descr{last_index = LastIndex,commit_index = Commit,first_index = FirstIndex,last_term = LastTerm},
+        #log_descr{last_index = LastIndex, commit_index = Commit, first_index = FirstIndex, last_term = LastTerm},
         LogState
     ),
     ?assertMatch(
@@ -1374,13 +1385,13 @@ check_snaphost_result(
         log_state = LogState,
         result = Res,
         last_conf = LastConf
-    })->
+    }) ->
     ?assertMatch(
         ok,
         Res
     ),
     ?assertMatch(
-        #log_descr{last_index = LastIndex,commit_index = Commit,first_index = FirstIndex,last_term = LastTerm},
+        #log_descr{last_index = LastIndex, commit_index = Commit, first_index = FirstIndex, last_term = LastTerm},
         LogState
     ),
     ?assertMatch(
