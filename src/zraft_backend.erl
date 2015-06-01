@@ -29,23 +29,23 @@
 -type snapshot_fun()::fun().
 
 
-%% @doc init backend FSM
+%% init backend FSM
 -callback init(zraft_consensus:peer_id()) -> state().
 
-%% @doc read/query data from FSM
+%% read/query data from FSM
 -callback query(read_cmd(),state()) -> {ok,term()}.
 
-%% @doc write data to FSM
+%% write data to FSM
 -callback apply_data([write_cmd()],state()) -> {ok,state()}.
 
-%% @doc Prepare FSM to take snapshot asycn if it's possible otherwice return function to take snapshot immediatly
+%% Prepare FSM to take snapshot asycn if it's possible otherwice return function to take snapshot immediatly
 -callback snapshot(state())->{sync,snapshot_fun()} | {async,snapshot_fun()}.
 
-%% @doc Notify that snapshot has done.
+%% Notify that snapshot has done.
 -callback snapshot_done(state())->{ok,state()}.
 
-%% @doc Notify that snapshot has failed.
+%% Notify that snapshot has failed.
 -callback snapshot_failed(Reason::term(),state())->{ok,state()}.
 
-%% @doc Read data from snapshot file or directiory.
+%% Read data from snapshot file or directiory.
 -callback install_snapshot(file:filename(),state())->{ok,state()}.

@@ -80,14 +80,14 @@
 ]).
 
 
--define(INFO(State,S, As),?MINFO("~p: "++S,[print_id(State)|As])).
--define(INFO(State,S), ?MINFO("~p: "++S,[print_id(State)])).
--define(ERROR(State,S, As),?MERROR("~p: "++S,[print_id(State)|As])).
--define(ERROR(State,S), ?MERROR("~p: "++S,[print_id(State)])).
--define(DEBUG(State,S, As),?MDEBUG("~p: "++S,[print_id(State)|As])).
--define(DEBUG(State,S), ?MDEBUG("~p: "++S,[print_id(State)])).
--define(WARNING(State,S, As),?MWARNING("~p: "++S,[print_id(State)|As])).
--define(WARNING(State,S), ?MWARNING("~p: "++S,[print_id(State)])).
+-define(INFO(State, S, As), ?MINFO("~p: " ++ S, [print_id(State) | As])).
+-define(INFO(State, S), ?MINFO("~p: " ++ S, [print_id(State)])).
+-define(ERROR(State, S, As), ?MERROR("~p: " ++ S, [print_id(State) | As])).
+-define(ERROR(State, S), ?MERROR("~p: " ++ S, [print_id(State)])).
+-define(DEBUG(State, S, As), ?MDEBUG("~p: " ++ S, [print_id(State) | As])).
+-define(DEBUG(State, S), ?MDEBUG("~p: " ++ S, [print_id(State)])).
+-define(WARNING(State, S, As), ?MWARNING("~p: " ++ S, [print_id(State) | As])).
+-define(WARNING(State, S), ?MWARNING("~p: " ++ S, [print_id(State)])).
 
 
 -define(ETIMEOUT, zraft_util:get_env(?ELECTION_TIMEOUT_PARAM, ?ELECTION_TIMEOUT)).
@@ -132,7 +132,7 @@
 -type install_snapshot_request() :: #install_snapshot{}.
 -type install_snapshot_reply() :: #install_snapshot_reply{}.
 -type snapshot_info() :: #snapshot_info{}.
--type raft_runtime_error()::{error,term()}.
+-type raft_runtime_error() :: {error, term()}.
 
 
 %%%===================================================================
@@ -146,20 +146,20 @@ query_local(PeerID, Query, Timeout) ->
     gen_fsm:sync_send_all_state_event(PeerID, Req, Timeout).
 
 %% @doc Query data form user backend.
--spec query(peer_id(), term(), timeout()) -> {ok, term()}|{leader,peer_id()}|retry|{error, term()}.
+-spec query(peer_id(), term(), timeout()) -> {ok, term()}|{leader, peer_id()}|{error, timeout}.
 query(PeerID, Query, Timeout) ->
     send_leader_request(PeerID, read_request, [Query], Timeout).
 
 %% @doc Read last stable quorum configuration
--spec get_conf(peer_id(), timeout()) -> {ok, term()}|{leader,peer_id()}|retry|{error, term()}.
+-spec get_conf(peer_id(), timeout()) -> {ok, term()}|{leader, peer_id()}|retry|{error, term()}.
 get_conf(PeerID, Timeout) ->
     send_leader_request(PeerID, get_conf_request, [], Timeout).
 
 %% @doc Write data to user backend
--spec write(peer_id(), term(), timeout()) -> ok|{leader, peer_id()}|{error, term()}.
+-spec write(peer_id(), term(), timeout()) -> ok|{leader, peer_id()}|{error, timeout}.
 write(PeerID, Data, Timeout) ->
     Now = os:timestamp(),
-    Req = #write_request{timeout = zraft_util:miscrosec_timeout(Timeout), data = Data, start_time = Now},
+    Req = #write_request{timeout = Timeout, data = Data, start_time = Now},
     gen_fsm:sync_send_all_state_event(PeerID, Req, Timeout).
 
 %% @doc Async write data to user backend
@@ -169,12 +169,13 @@ write_async(PeerID, Data) ->
     gen_fsm:send_all_state_event(PeerID, Req).
 
 %% @doc Write data to user backend
--spec set_new_configuration(peer_id(), index(), list(peer_id()), timeout()) -> ok|{leader, peer_id()}|{error, term()}.
+-spec set_new_configuration(peer_id(), index(), list(peer_id()), timeout()) ->
+    ok|{leader, peer_id()}|not_stable|newer_exists|process_prev_change.
 set_new_configuration(PeerID, PrevID, Peers, Timeout) ->
     Now = os:timestamp(),
     Req = #conf_change_requet{
         prev_id = PrevID,
-        timeout = zraft_util:miscrosec_timeout(Timeout),
+        timeout = Timeout,
         peers = Peers,
         start_time = Now},
     gen_fsm:sync_send_all_state_event(PeerID, Req, Timeout).
@@ -232,7 +233,7 @@ truncate_log(Raft, SnapshotInfo) ->
 -spec send_leader_request(peer_id(), atom(), list(), timeout()) -> {ok, term()}|retry|{error, not_leader}|{error, term()}.
 send_leader_request(PeerID, Function, Args, Timeout) ->
     Now = os:timestamp(),
-    Req = #read_request{timeout = zraft_util:miscrosec_timeout(Timeout), function = Function, args = Args, start_time = Now},
+    Req = #read_request{timeout = Timeout, function = Function, args = Args, start_time = Now},
     gen_fsm:sync_send_all_state_event(PeerID, Req, Timeout).
 
 %%%===================================================================
@@ -251,7 +252,7 @@ init_state(InitState) ->
         back_end = BackEnd,
         snapshot_info = Info
     } = InitState,
-    ?INFO(InitState,"Init state"),
+    ?INFO(InitState, "Init state"),
     Meta = zraft_fs_log:get_raft_meta(Log),
     case maybe_set_back_end(BackEnd, Meta, Log) of
         {error, Error} ->
@@ -300,7 +301,7 @@ load(bootstrap, From, State) ->
         false ->
             {next_state, load, State#init_state{bootstrap = From}};
         _ ->
-            {reply,{error,initialized}, load, State}
+            {reply, {error, initialized}, load, State}
     end;
 load(_, _, State) ->
     {next_state, load, State}.
@@ -319,8 +320,8 @@ follower(Req = #append_entries{}, State) ->
     handle_append_entries(follower, Req, State);
 follower(Req = #vote_request{}, State) ->
     handle_vote_reuqest(follower, Req, State);
-follower({peer_up,PeerAddr}, State = #state{}) ->
-    ?INFO(State,"Peer ~p has restarted",[zraft_util:peer_id(PeerAddr)]),
+follower({peer_up, PeerAddr}, State = #state{}) ->
+    ?INFO(State, "Peer ~p has restarted", [zraft_util:peer_id(PeerAddr)]),
     {next_state, follower, State};
 follower(Req, State = #state{}) ->
     drop_request(follower, Req, State).
@@ -350,14 +351,14 @@ bootstrap(From, State) ->
 %%% Candidate State
 %%%===================================================================
 candidate(timeout, State = #state{current_term = Term}) ->
-    ?INFO(State,"Candidate start new election. Prev term ~p timed out", [Term]),
+    ?INFO(State, "Candidate start new election. Prev term ~p timed out", [Term]),
     start_election(State);
 candidate(#vote_reply{request_term = Term1}, State = #state{current_term = Term2}) when Term1 /= Term2 ->
     %%ignore result. May be expired
     {next_state, candidate, State};
 candidate(R = #vote_reply{peer_term = Term1, commit = CommitIndex},
     State = #state{current_term = Term2}) when Term1 > Term2 ->
-    ?INFO(State,"Received vote response from ~p. PeerTerm(~p) > SelfTerm(~p)",
+    ?INFO(State, "Received vote response from ~p. PeerTerm(~p) > SelfTerm(~p)",
         [R#vote_reply.from_peer, Term1, Term2]),
     case maybe_shutdown(CommitIndex, State) of
         true ->
@@ -366,7 +367,7 @@ candidate(R = #vote_reply{peer_term = Term1, commit = CommitIndex},
             step_down(candidate, Term1, State)
     end;
 candidate(R = #vote_reply{from_peer = PeerID, granted = Granted, epoch = Epoch}, State) ->
-    ?INFO(State,"Receive vote ~p response from ~p.", [Granted, PeerID]),
+    ?INFO(State, "Receive vote ~p response from ~p.", [Granted, PeerID]),
     update_peer(PeerID, fun(P) -> P#peer{has_vote = Granted, epoch = Epoch} end, State),
     if
         Granted ->
@@ -387,8 +388,8 @@ candidate(Req = #vote_request{}, State) ->
     handle_vote_reuqest(candidate, Req, State);
 candidate({make_snapshot_info, From, Index}, State) ->
     make_snapshot_info(candidate, From, Index, State);
-candidate({peer_up,PeerAddr}, State = #state{}) ->
-    ?INFO(State,"Peer ~p has restarted",[zraft_util:peer_id(PeerAddr)]),
+candidate({peer_up, PeerAddr}, State = #state{}) ->
+    ?INFO(State, "Peer ~p has restarted", [zraft_util:peer_id(PeerAddr)]),
     {next_state, candidate, State};
 candidate(Req, State = #state{}) ->
     drop_request(candidate, Req, State).
@@ -423,10 +424,10 @@ leader({maybe_step_down, Term}, State) ->
 leader({replicate_log, ToPeer, AppendReq}, State = #state{log = Log, current_term = Term, epoch = Epoch}) ->
     zraft_fs_log:replicate_log(Log, ToPeer, AppendReq#append_entries{term = Term, epoch = Epoch}),
     {next_state, leader, State};
-leader({peer_up,PeerAddr}, State = #state{}) ->
-    to_peer(zraft_util:peer_id(PeerAddr),{peer_up,PeerAddr},State),
-    ?INFO(State,"Peer ~p has restarted",[zraft_util:peer_id(PeerAddr)]),
-    {next_state,leader, State};
+leader({peer_up, PeerAddr}, State = #state{}) ->
+    to_peer(zraft_util:peer_id(PeerAddr), {peer_up, PeerAddr}, State),
+    ?INFO(State, "Peer ~p has restarted", [zraft_util:peer_id(PeerAddr)]),
+    {next_state, leader, State};
 leader(Req, State = #state{}) ->
     drop_request(leader, Req, State).
 
@@ -441,7 +442,7 @@ leader(_Event, _From, State) ->
 
 %%drop all unknown requests
 drop_request(StateName, Req, State) ->
-    ?WARNING(State,"In state ~s drop reuqest ~p", [StateName, Req]),
+    ?WARNING(State, "In state ~s drop reuqest ~p", [StateName, Req]),
     {next_state, StateName, State}.
 
 %%%===================================================================
@@ -461,10 +462,10 @@ handle_event(Info = #snapshot_info{}, StateName, State = #state{log = Log}) ->
             State2 = set_config(StateName, NewConf, State1),
             {next_state, StateName, State2};
         #log_op_result{result = Error} ->
-            ?ERROR(State,"Fail truncate log ~p", [Error]),
+            ?ERROR(State, "Fail truncate log ~p", [Error]),
             {stop, Error, State};
         Error ->
-            ?ERROR(State,"Fail truncate log ~p", [Error]),
+            ?ERROR(State, "Fail truncate log ~p", [Error]),
             {stop, {error, snapshot_failed}, State}
     end;
 handle_event({sync_peer, true}, leader, State) ->
@@ -488,7 +489,7 @@ handle_event(#aysnc_write_request{data = Data}, leader,
     {next_state, leader, State1};
 handle_event(#aysnc_write_request{}, StateName, State) ->
     %%Ignore request
-    {next_state,StateName, State};
+    {next_state, StateName, State};
 handle_event(_Event, StateName, State) ->
     {next_state, StateName, State}.
 
@@ -504,7 +505,7 @@ handle_sync_event(stat, _From, load, State) ->
         snapshot_info = #snapshot_info{},
         log_state = #log_descr{}
     },
-    {reply,S1,load,State};
+    {reply, S1, load, State};
 handle_sync_event(stat, _From, StateName, State) ->
     #state{
         epoch = E,
@@ -546,8 +547,8 @@ handle_sync_event(_, _From, load, InitialState) ->
 handle_sync_event(Req = #read_request_local{args = Args}, From, StateName,
     State = #state{}) ->
     #read_request_local{function = Function, args = Args} = Req,
-    erlang:apply(?MODULE, Function, [State,From | Args]),
-    {next_state,StateName, State};
+    erlang:apply(?MODULE, Function, [State, From | Args]),
+    {next_state, StateName, State};
 handle_sync_event(Req = #read_request{args = Args}, From, leader,
     State = #state{sessions = Sessions, epoch = Epoch}) ->
     #sessions{read = Requests} = Sessions,
@@ -600,9 +601,9 @@ handle_sync_event(#conf_change_requet{}, _From, StateName, State) ->
 %%%===================================================================
 handle_sync_event(force_timeout, From, StateName, State) ->
     case State of
-        #init_state{}->
+        #init_state{} ->
             {reply, false, StateName, State};
-        _->
+        _ ->
             if
                 State#state.timer == undefined ->
                     {reply, false, StateName, State};
@@ -623,10 +624,10 @@ handle_info({Async, Res}, load, InitState = #init_state{async = Async}) ->
         #log_op_result{result = ok} ->
             init_state(InitState#init_state{async = undefined});
         #log_op_result{result = Error} ->
-            ?ERROR(InitState,"Fail truncate log ~p", [Error]),
+            ?ERROR(InitState, "Fail truncate log ~p", [Error]),
             {stop, Error, InitState};
         Error ->
-            ?ERROR(InitState,"Fail truncate log ~p", [Error]),
+            ?ERROR(InitState, "Fail truncate log ~p", [Error]),
             {stop, Error, InitState}
     end;
 handle_info(_Info, StateName, State) ->
@@ -786,7 +787,7 @@ handle_vote_reuqest(StateName, Req, State) ->
                     end
             end;
         _ ->
-            ?WARNING(State,"Rejecting RequestVote from ~p, since we recently heard from a "
+            ?WARNING(State, "Rejecting RequestVote from ~p, since we recently heard from a "
             "leader ~p. Should server ~p be shut down?",
                 [Req#vote_request.from, State#state.leader, Req#vote_request.from]),
             reject_vote(StateName, Req, State),
@@ -832,15 +833,15 @@ is_time_to_elect(#state{last_hearbeat = LastHearbeat, election_timeout = Timeout
 
 handle_install_snapshot(StateName, Req = #install_snapshot{term = T1, from = From},
     State = #state{current_term = T2}) when T1 < T2 ->
-    ?WARNING(State,"Caller ~p is out of date.", [From]),
+    ?WARNING(State, "Caller ~p is out of date.", [From]),
     reject_install_snapshot(Req, State),
     {next_state, StateName, State};
 handle_install_snapshot(StateName, Req = #install_snapshot{term = T1, from = From},
-    State = #state{current_term = T2,leader = Leader}) when T1 == T2 ->
+    State = #state{current_term = T2, leader = Leader}) when T1 == T2 ->
     {NewLeader, _} = From,
     if
         (Leader /= undefined andalso NewLeader /= Leader) orelse StateName == leader ->
-            ?ERROR(State,"Received install snapshot from unknown leader ~p current leader is ~p",
+            ?ERROR(State, "Received install snapshot from unknown leader ~p current leader is ~p",
                 [NewLeader, Leader]),
             {stop, {error, invalid_new_leader}, State};
         NewLeader == Leader ->
@@ -877,7 +878,7 @@ install_snapshot(Req, State) ->
 
 handle_append_entries(StateName, Req = #append_entries{term = T1, from = From},
     State = #state{current_term = T2}) when T1 < T2 ->
-    ?WARNING(State,"Caller ~p is out of date.", [From]),
+    ?WARNING(State, "Caller ~p is out of date.", [From]),
     reject_append(Req, State),
     {next_state, StateName, State};
 handle_append_entries(StateName, Req = #append_entries{term = T1, from = From},
@@ -885,7 +886,7 @@ handle_append_entries(StateName, Req = #append_entries{term = T1, from = From},
     {NewLeader, _} = From,
     if
         (Leader /= undefined andalso NewLeader /= Leader) orelse StateName == leader ->
-            ?ERROR(State,"Received apped entry from unknown leader ~p current leader is ~p",
+            ?ERROR(State, "Received apped entry from unknown leader ~p current leader is ~p",
                 [NewLeader, Leader]),
             {stop, {error, invalid_new_leader}, State};
         NewLeader == Leader ->
@@ -956,10 +957,10 @@ start_election(State =
     VoteRequest = #vote_request{epoch = Epoch, term = NextTerm, from = peer(PeerID), last_index = LastIndex, last_term = LastTerm},
     to_all_peer_direct(VoteRequest, State),
     Leader /= undefined andalso
-        ?INFO(State,"Start for election in term ~p old leader was ~p", [NextTerm, Leader]),
+        ?INFO(State, "Start for election in term ~p old leader was ~p", [NextTerm, Leader]),
     ok = zraft_fs_log:update_raft_meta(
         Log,
-        #raft_meta{id = PeerID,voted_for = PeerID, back_end = BackEnd, current_term = NextTerm}
+        #raft_meta{id = PeerID, voted_for = PeerID, back_end = BackEnd, current_term = NextTerm}
     ),
     #log_descr{last_index = LastIndex, last_term = LastTerm} = LogState,
     update_all_peer(
@@ -1033,11 +1034,11 @@ maybe_update_vote(VoteFor, State) ->
 
 %%update our vote
 update_vote(VoteFor, State) ->
-    #state{back_end = BackEnd, log = Log, current_term = Term,id = PeerID} = State,
+    #state{back_end = BackEnd, log = Log, current_term = Term, id = PeerID} = State,
     State1 = State#state{voted_for = VoteFor},
     ok = zraft_fs_log:update_raft_meta(
         Log,
-        #raft_meta{id = PeerID,voted_for = VoteFor, back_end = BackEnd, current_term = Term}
+        #raft_meta{id = PeerID, voted_for = VoteFor, back_end = BackEnd, current_term = Term}
     ),
     State1.
 
@@ -1244,14 +1245,14 @@ check_blank_state(#state{current_term = T, snapshot_info = #snapshot_info{index 
     #log_descr{first_index = F, last_index = L} = LogState,
     (T == 0) and (L == 0) and (F == 1) and (S == 0).
 
-start_timer(State = #state{id = ID,timer = Timer, election_timeout = Timeout}) ->
+start_timer(State = #state{id = ID, timer = Timer, election_timeout = Timeout}) ->
     if
         Timer == undefined ->
             ok;
         true ->
             gen_fsm:cancel_timer(Timer)
     end,
-    Timeout1 = zraft_util:random(ID,Timeout) + Timeout,
+    Timeout1 = zraft_util:random(ID, Timeout) + Timeout,
     NewTimer = gen_fsm:send_event_after(Timeout1, timeout),
     State#state{timer = NewTimer}.
 
@@ -1335,10 +1336,10 @@ reset_read_requests(State = #state{sessions = Sessions, leader = Leader}) ->
 
 reset_write_requests(State = #state{sessions = #sessions{write = []}}) ->
     State;
-reset_write_requests(State = #state{sessions = Sessions}) ->
+reset_write_requests(State = #state{sessions = Sessions, leader = Leader}) ->
     #sessions{write = Requests} = Sessions,
     lists:foreach(fun({_, Req}) ->
-        reset_request(Req, {error, not_leader}) end, Requests),
+        reset_request(Req, {leader, Leader}) end, Requests),
     State#state{sessions = Sessions#sessions{write = []}}.
 
 apply_read_requests(State = #state{allow_commit = false}) ->
@@ -1376,18 +1377,12 @@ check_request_timeout(Req = #read_request{start_time = Start, timeout = Timeout}
 check_request_timeout(Req = #write_request{start_time = Start, timeout = Timeout}) ->
     check_request_timeout(Req, Start, Timeout).
 check_request_timeout(Req, Start, Timeout) ->
-    if
-        Timeout == infinity ->
-            true;
+    case zraft_util:is_expired(Start, Timeout) of
         true ->
-            Delta = timer:now_diff(os:timestamp(), Start),
-            if
-                Delta < Timeout ->
-                    true;
-                true ->
-                    reset_request(Req, {error, timeout}),
-                    false
-            end
+            reset_request(Req, {error, timeout}),
+            false;
+        _ ->
+            true
     end.
 reset_request(#conf_change_requet{from = From}, Reason) ->
     gen_fsm:reply(From, Reason);
@@ -1474,9 +1469,9 @@ send_all_state_event(P, Event) when is_pid(P) ->
 send_all_state_event({_, P}, Event) ->
     gen_fsm:send_all_state_event(P, Event).
 
-print_id(#state{id = ID})->
+print_id(#state{id = ID}) ->
     ID;
-print_id(#init_state{id = ID})->
+print_id(#init_state{id = ID}) ->
     ID.
 
 -ifdef(TEST).
