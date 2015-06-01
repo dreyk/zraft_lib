@@ -55,6 +55,7 @@
     request_timer,
     hearbeat_timer,
     request_ref,
+    request_time,
     force_hearbeat = false,
     force_request = false,
     current_term = 0,
@@ -359,7 +360,7 @@ start_replication(State) ->
     },
     zraft_consensus:replicate_log(Raft, PeerID, Req),
     Timer = zraft_util:gen_server_cast_after(Timeout, request_timeout),
-    State#state{request_ref = RequestRef, request_timer = Timer}.
+    State#state{request_ref = RequestRef, request_timer = Timer,request_time = os:timestamp()}.
 replicate(Req, State) ->
     #state{peer = Peer,request_timeout = Timeout} = State,
     #peer{id = PeerID} = Peer,
@@ -371,7 +372,7 @@ replicate(Req, State) ->
         Req#append_entries{commit_index = NewCommitIndex,request_ref = RequestRef, from = from_addr(State)}
     ),
     Timer = zraft_util:gen_server_cast_after(Timeout, request_timeout),
-    State#state{request_ref = RequestRef, request_timer = Timer}.
+    State#state{request_ref = RequestRef, request_timer = Timer,request_time = os:timestamp()}.
 
 install_snapshot(Req, State) ->
     #state{peer = Peer,request_timeout = Timeout} = State,
@@ -381,7 +382,11 @@ install_snapshot(Req, State) ->
     NewReq = Req#install_snapshot{data = start, request_ref = RequestRef, from = from_addr(State)},
     zraft_peer_route:cmd(PeerID, NewReq),
     Timer = zraft_util:gen_server_cast_after(Timeout, request_timeout),
-    State#state{request_ref = RequestRef, request_timer = Timer, snapshot_progres = SnapsotProgress}.
+    State#state{
+        request_ref = RequestRef,
+        request_timer = Timer,
+        snapshot_progres = SnapsotProgress,
+        request_time = os:timestamp()}.
 install_snapshot_hearbeat(Type, State) ->
     #state{
         peer = Peer,
@@ -403,7 +408,7 @@ install_snapshot_hearbeat(Type, State) ->
     },
     zraft_peer_route:cmd(PeerID, NewReq),
     Timer = zraft_util:gen_server_cast_after(Timeout, request_timeout),
-    State#state{request_ref = RequestRef, request_timer = Timer}.
+    State#state{request_ref = RequestRef, request_timer = Timer,request_time = os:timestamp()}.
 
 reset_snapshot(State = #state{snapshot_progres = undefined}) ->
     State;
@@ -448,9 +453,21 @@ progress(State = #state{force_hearbeat = FH, force_request = FR}) ->
              end,
     {noreply, State2}.
 
-start_hearbeat_timer(State) ->
-    Ref = zraft_util:gen_server_cast_after(zraft_consensus:get_election_timeout(), hearbeat_timeout),
-    State#state{hearbeat_timer = Ref}.
+start_hearbeat_timer(State=#state{request_time = ReqTime}) ->
+    ElectionTimeout = zraft_consensus:get_election_timeout(),
+    Timeout = if
+               ReqTime==undefined->
+                   ElectionTimeout;
+               true->
+                   case round(timer:now_diff(os:timestamp(),ReqTime)/1000) of
+                       T1 when T1>ElectionTimeout->
+                           0;
+                       T1->
+                           ElectionTimeout-T1
+                   end
+           end,
+    Ref =  zraft_util:gen_server_cast_after(Timeout, hearbeat_timeout),
+    State#state{hearbeat_timer = Ref,request_time = undefined}.
 
 reply({Ref, Pid}, Msg) ->
     Pid ! {Ref, Msg};
