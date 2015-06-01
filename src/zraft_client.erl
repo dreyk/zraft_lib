@@ -21,7 +21,10 @@
 -author("dreyk").
 
 %% API
--export([create/2]).
+-export([
+    create/2,
+    create/3
+]).
 
 -define(TIMEOUT,5000).
 -define(CREATE_TIMEOUT,5000).
@@ -78,20 +81,20 @@ create(FirstPeer,AllPeers,UseBackend)->
 set_new_conf(PeerID,NewPeers,OldPeers,Timeout)->
     NewSorted = ordsets:from_list(NewPeers),
     case wait_stable_conf(PeerID,Timeout) of
-        {ok,_Leader,_Index,NewSorted}->
+        {ok,{_Leader,_Index,NewSorted}}->
             {ok,NewPeers};
-        {ok,Leader,Index,HasPeers}->
+        {ok,{Leader,Index,HasPeers}}->
             case ordsets:from_list(OldPeers) of
                 HasPeers->
-                    {error,peers_changed};
-                _->
                     case zraft_consensus:set_new_configuration(Leader,Index,NewSorted,Timeout) of
                         ok->{ok,NewPeers};
                         {leader,_NewLeader}->
                             {error,leader_changed};
                         Else->
                             Else
-                    end
+                    end;
+                _->
+                    {error,peers_changed}
             end
     end.
 

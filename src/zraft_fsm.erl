@@ -147,6 +147,8 @@ handle_cast(#leader_read_request{from = From, request = Query}, State = #state{b
 handle_cast(_, State) ->
     {noreply, State}.
 
+handle_info({timeout,_,{'$zraft_timeout', Event}},State)->
+    handle_cast(Event,State);
 handle_info({'DOWN', Ref, process, _, normal},
     State = #state{active_snapshot = #snapshoter{mref = Ref, type = copy}}) ->
     ?INFO(State,"Snapshot transfer has finished"),

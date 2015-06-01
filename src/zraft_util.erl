@@ -26,9 +26,8 @@
     escape_node/1,
     node_name/1,
     get_env/2,
-    random/1
-]).
--export([
+    random/1,
+    start_app/1,
     del_dir/1,
     make_dir/1,
     node_addr/1,
@@ -138,7 +137,7 @@ miscrosec_timeout(Timeout)->
     Timeout.
 
 gen_server_cast_after(Time, Event) ->
-    erlang:send_after(Time,self(),{'$gen_cast', Event}).
+    erlang:start_timer(Time,self(),{'$zraft_timeout', Event}).
 gen_server_cancel_timer(Ref)->
     case erlang:cancel_timer(Ref) of
         false ->
@@ -164,7 +163,7 @@ clear_test_dir(Dir)->
     application:unset_env(zraft_lib,snapshot_dir),
     del_dir(Dir).
 
-is_expired(Start,infinity)->
+is_expired(_Start,infinity)->
     false;
 is_expired(Start,Timeout)->
     T1 = Timeout*1000,
@@ -174,3 +173,19 @@ is_expired(Start,Timeout)->
         _->
             false
     end.
+
+start_app(App)->
+    start_app(App,ok).
+start_app(App,ok) ->
+    io:format("starting ~s~n",[App]),
+    case application:start(App) of
+        {error,{not_started,App1}}->
+            start_app(App,start_app(App1,ok));
+        {error, {already_started, App}}->
+            ok;
+        Else->
+            io:format("start result ~s - ~p~n",[App,Else]),
+            Else
+    end;
+start_app(_,Error) ->
+    Error.

@@ -315,6 +315,8 @@ handle_cast({stat, From}, State = #state{peer = Peer,snapshot_progres = Progress
 handle_cast(_Request, State) ->
     {noreply, State}.
 
+handle_info({timeout,_,{'$zraft_timeout', Event}},State)->
+    handle_cast(Event,State);
 handle_info({'DOWN', Ref, process, _, normal},
     State = #state{snapshot_progres = #snapshot_progress{mref = Ref}}) ->
     ?INFO(State,"Snapshot has transfered."),
