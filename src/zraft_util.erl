@@ -37,7 +37,8 @@
     peer_id/1,
     set_test_dir/1,
     clear_test_dir/1,
-    is_expired/2]).
+    is_expired/2,
+    random/2]).
 
 peer_name({Name,Node}) when is_atom(Name)->
     atom_to_list(Name)++"-"++node_name(Node);
@@ -69,6 +70,9 @@ get_env(Key, Default) ->
 -spec random(pos_integer()) -> pos_integer().
 random(N) ->
     erlang:phash2(erlang:statistics(io), N).
+-spec random(term(),pos_integer()) -> pos_integer().
+random(Prefix,N) ->
+    erlang:phash2({Prefix,erlang:statistics(io)}, N).
 
 del_dir(Dir)->
     case del_dir1(Dir) of

@@ -48,7 +48,8 @@
     get_entries/3,
     replicate_log/3,
     update_commit_index/2,
-    make_snapshot_info/3
+    make_snapshot_info/3,
+    load_raft_meta/1
 ]).
 
 -export_type([
@@ -776,10 +777,10 @@ update_metadata(FS = #fs{meta_version = Version, first_index = Index, peer_dir =
     ok = file:write_file(FName, term_to_binary(#meta{version = NewVersion, first = Index, raft_meta = RaftMeta})),
     FS#fs{meta_version = NewVersion}.
 
-load_meta(FS = #fs{peer_dir = Dir}) ->
+load_meta(FS = #fs{peer_dir = Dir,peer_id = ID}) ->
     Meta2 = #meta{version = V2} = case read_meta_file(filename:join(Dir, "meta2.info")) of
                                       {error, _} ->
-                                          #meta{version = 1, first = 1};
+                                          #meta{version = 1, first = 1,raft_meta = #raft_meta{id = ID}};
                                       M ->
                                           M
                                   end,
@@ -967,6 +968,24 @@ make_snapshot_info(Index,
             Conf = V1
     end,
     #snapshot_info{term = Term, index = Index, conf = Conf, conf_index = ConfIndex}.
+
+load_raft_meta(Dir) ->
+    case read_meta_file(filename:join(Dir, "meta2.info")) of
+        #meta{version = V1}=M1 ->
+            case read_meta_file(filename:join(Dir, "meta1.info")) of
+                #meta{version = V2}=M2 when V2>V1->
+                    {ok,M2#meta.raft_meta};
+                _->
+                    {ok,M1#meta.raft_meta}
+            end;
+        Error->
+            case read_meta_file(filename:join(Dir, "meta1.info")) of
+                #meta{}=M2->
+                    {ok,M2#meta.raft_meta};
+                _->
+                    Error
+            end
+    end.
 
 -ifdef(TEST).
 setup_log() ->

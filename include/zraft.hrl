@@ -51,7 +51,7 @@
 
 -record(pconf,{old_peers=[],new_peers=[]}).
 
--record(raft_meta,{voted_for,current_term=0,back_end}).
+-record(raft_meta,{id,voted_for,current_term=0,back_end}).
 
 -record(peer,{id,next_index=1,has_vote=false,last_agree_index=0,epoch=0}).
 

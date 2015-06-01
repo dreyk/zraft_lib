@@ -43,7 +43,8 @@ start_link() ->
 init([]) ->
     Timeout = max(1,round(zraft_consensus:get_election_timeout()*4/1000)),
     SupFlags = {one_for_one,2,Timeout},
-    {ok, {SupFlags, []}}.
+    Peers  = read_peers(),
+    {ok, {SupFlags, Peers}}.
 
 -spec start_consensus(zraft_consensus:peer_id(),module()) -> supervisor:startchild_ret().
 start_consensus(PeerID,BackEnd)->
@@ -75,3 +76,25 @@ consensus_spec([{PeerName,_}|_]=Args) ->
         [zraft_consensus]
     }.
 
+%%@private
+read_peers()->
+    DataDir = zraft_util:get_env(log_dir, "data"),
+    case file:list_dir(DataDir) of
+        {ok,Dirs}->
+            read_peers(DataDir,Dirs,[]);
+        _->
+            []
+    end.
+
+read_peers(DataDir,[Dir|T],Acc)->
+    RaftDir = filename:join(DataDir,Dir),
+    case zraft_fs_log:load_raft_meta(RaftDir) of
+        {ok,#raft_meta{id = Peer,back_end = BackEnd}}->
+            Spec = consensus_spec([Peer,BackEnd]),
+            read_peers(DataDir,T,[Spec|Acc]);
+        _->
+            lager:warning("~p does't contains peer meta",[RaftDir]),
+            read_peers(DataDir,T,Acc)
+    end;
+read_peers(_DataDir,[],Acc)->
+    Acc.

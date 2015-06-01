@@ -959,7 +959,7 @@ start_election(State =
         ?INFO(State,"Start for election in term ~p old leader was ~p", [NextTerm, Leader]),
     ok = zraft_fs_log:update_raft_meta(
         Log,
-        #raft_meta{voted_for = PeerID, back_end = BackEnd, current_term = NextTerm}
+        #raft_meta{id = PeerID,voted_for = PeerID, back_end = BackEnd, current_term = NextTerm}
     ),
     #log_descr{last_index = LastIndex, last_term = LastTerm} = LogState,
     update_all_peer(
@@ -1033,11 +1033,11 @@ maybe_update_vote(VoteFor, State) ->
 
 %%update our vote
 update_vote(VoteFor, State) ->
-    #state{back_end = BackEnd, log = Log, current_term = Term} = State,
+    #state{back_end = BackEnd, log = Log, current_term = Term,id = PeerID} = State,
     State1 = State#state{voted_for = VoteFor},
     ok = zraft_fs_log:update_raft_meta(
         Log,
-        #raft_meta{voted_for = VoteFor, back_end = BackEnd, current_term = Term}
+        #raft_meta{id = PeerID,voted_for = VoteFor, back_end = BackEnd, current_term = Term}
     ),
     State1.
 
@@ -1244,14 +1244,14 @@ check_blank_state(#state{current_term = T, snapshot_info = #snapshot_info{index 
     #log_descr{first_index = F, last_index = L} = LogState,
     (T == 0) and (L == 0) and (F == 1) and (S == 0).
 
-start_timer(State = #state{timer = Timer, election_timeout = Timeout}) ->
+start_timer(State = #state{id = ID,timer = Timer, election_timeout = Timeout}) ->
     if
         Timer == undefined ->
             ok;
         true ->
             gen_fsm:cancel_timer(Timer)
     end,
-    Timeout1 = zraft_util:random(Timeout) + Timeout,
+    Timeout1 = zraft_util:random(ID,Timeout) + Timeout,
     NewTimer = gen_fsm:send_event_after(Timeout1, timeout),
     State#state{timer = NewTimer}.
 
