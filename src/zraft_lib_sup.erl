@@ -93,7 +93,7 @@ read_peers(DataDir,[Dir|T],Acc)->
             Spec = consensus_spec([Peer,BackEnd]),
             read_peers(DataDir,T,[Spec|Acc]);
         _->
-            lager:warning("~p does't contains peer meta",[RaftDir]),
+            lager:warning("~p does't contain peer meta",[RaftDir]),
             read_peers(DataDir,T,Acc)
     end;
 read_peers(_DataDir,[],Acc)->
