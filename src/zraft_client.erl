@@ -31,6 +31,10 @@
     create/3
 ]).
 
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+-endif.
+
 -define(TIMEOUT,5000).
 -define(CREATE_TIMEOUT,5000).
 
@@ -329,3 +333,16 @@ format_error({error,_}=Error)->
     Error;
 format_error(Error)->
     {error,Error}.
+
+-ifdef(TEST).
+
+next_leader_test()->
+    S1 = light_session([1,2,3]),
+    S2 = next_leader(S1,1),
+    ?assertEqual(#light_session{peers = [3],leader = 2,peers_tmp = [2,1]},S2),
+    S3 = next_leader(S2,3),
+    ?assertEqual(#light_session{peers = [2,3],leader = 1,peers_tmp = [1]},S3),
+    S4 = next_leader(S3,0),
+    ?assertEqual(#light_session{peers = [3],leader = 2,peers_tmp = [2,1]},S4).
+
+-endif.
