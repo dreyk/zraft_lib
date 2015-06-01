@@ -146,14 +146,13 @@ handle_cast(hearbeat_timeout, State = #state{request_ref = Ref}) when Ref /= und
     ?WARNING(State,"There is active request"),
     {noreply, State};
 handle_cast(hearbeat_timeout, State) ->%%send new hearbeat
-    State1 = reset_timers(false, State),
     case State#state.snapshot_progres of
         undefined ->
-            State2 = start_replication(State1),
+            State2 = start_replication(State),
             {noreply, State2};
         _ ->
             %%Send herabeat to check update peer state
-            State2 = install_snapshot_hearbeat(hearbeat, State1),
+            State2 = install_snapshot_hearbeat(hearbeat, State),
             {noreply, State2}
     end;
 handle_cast(request_timeout, State = #state{request_ref = undefined}) ->
