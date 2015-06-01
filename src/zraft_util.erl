@@ -37,7 +37,8 @@
     gen_server_cast_after/2,
     peer_id/1,
     set_test_dir/1,
-    clear_test_dir/1]).
+    clear_test_dir/1,
+    is_expired/2]).
 
 peer_name({Name,Node}) when is_atom(Name)->
     atom_to_list(Name)++"-"++node_name(Node);
@@ -162,3 +163,14 @@ clear_test_dir(Dir)->
     application:unset_env(zraft_lib,log_dir),
     application:unset_env(zraft_lib,snapshot_dir),
     del_dir(Dir).
+
+is_expired(Start,infinity)->
+    false;
+is_expired(Start,Timeout)->
+    T1 = Timeout*1000,
+    case timer:now_diff(os:timestamp(),Start) of
+        T2 when T2 >= T1 ->
+            true;
+        _->
+            false
+    end.

@@ -53,7 +53,8 @@
     raft_term/0,
     install_snapshot_request/0,
     install_snapshot_reply/0,
-    snapshot_info/0
+    snapshot_info/0,
+    raft_runtime_error/0
 ]).
 
 -export([
@@ -131,6 +132,7 @@
 -type install_snapshot_request() :: #install_snapshot{}.
 -type install_snapshot_reply() :: #install_snapshot_reply{}.
 -type snapshot_info() :: #snapshot_info{}.
+-type raft_runtime_error()::{error,term()}.
 
 
 %%%===================================================================
@@ -138,18 +140,18 @@
 %%%===================================================================
 
 %% @doc Query data form user backend from current peer.
--spec query_local(peer_id(), term(), timeout()) -> {ok, term()}|retry|{error, not_leader}|{error, term()}.
+-spec query_local(peer_id(), term(), timeout()) -> {ok, term()}|{error, term()}.
 query_local(PeerID, Query, Timeout) ->
     Req = #read_request_local{function = read_request, args = [Query]},
     gen_fsm:sync_send_all_state_event(PeerID, Req, Timeout).
 
 %% @doc Query data form user backend.
--spec query(peer_id(), term(), timeout()) -> {ok, term()}|retry|{error, not_leader}|{error, term()}.
+-spec query(peer_id(), term(), timeout()) -> {ok, term()}|{leader,peer_id()}|retry|{error, term()}.
 query(PeerID, Query, Timeout) ->
     send_leader_request(PeerID, read_request, [Query], Timeout).
 
 %% @doc Read last stable quorum configuration
--spec get_conf(peer_id(), timeout()) -> {ok, term()}|retry|{error, not_leader}|{error, term()}.
+-spec get_conf(peer_id(), timeout()) -> {ok, term()}|{leader,peer_id()}|retry|{error, term()}.
 get_conf(PeerID, Timeout) ->
     send_leader_request(PeerID, get_conf_request, [], Timeout).
 
@@ -298,7 +300,7 @@ load(bootstrap, From, State) ->
         false ->
             {next_state, load, State#init_state{bootstrap = From}};
         _ ->
-            {reply, ok, load, State}
+            {reply,{error,initialized}, load, State}
     end;
 load(_, _, State) ->
     {next_state, load, State}.

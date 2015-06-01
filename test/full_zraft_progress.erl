@@ -148,10 +148,10 @@ progress() ->
         ok = wait_follower_sync(5, 5, 2, PeerID2, Peer22, 1),
         R1 = zraft_consensus:query_local(PeerID2, fun(Dict) -> lists:ukeysort(1, dict:to_list(Dict)) end, ?TIMEOUT),
         ?assertMatch([{1, "1"}], R1),
-
-
         [zraft_consensus:write(PeerID1, {I, integer_to_list(I)}, ?TIMEOUT) || I <- lists:seq(2, 8)],
+        ok = wait_snapshot_done(10, Peer1, 1),
         Res7 = zraft_consensus:stat(Peer1),
+        ?assertMatch(#log_descr{commit_index = 12, first_index = 11, last_index = 12, last_term = 2},Res7#peer_start.log_state),
         ?assertMatch(
             #peer_start{
                 term = 2,
@@ -162,8 +162,6 @@ progress() ->
             },
             Res7
         ),
-
-        ok = wait_snapshot_done(10, Peer1, 1),
         ok = zraft_consensus:stop(Peer3),
         ok = zraft_util:del_dir("full-test-data/test3-zraft_test_localhost"),
         %%restart it this empty state

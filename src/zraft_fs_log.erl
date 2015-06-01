@@ -64,11 +64,9 @@
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
--define(MAX_SEGMENT_SIZE, 73).%% three entry per segment
--else.
--define(MAX_SEGMENT_SIZE, zraft_util:get_env(max_segment_size, 10485760)).%%10 MB
 -endif.
 
+-define(MAX_SEGMENT_SIZE, zraft_util:get_env(max_segment_size, 10485760)).%%10 MB
 -define(READ_BUFFER_SIZE, 1048576).%%1MB
 -define(SERVER, ?MODULE).
 
@@ -436,7 +434,7 @@ delete_segment(#segment{fname = Name, fd = Fd}) ->
 set_segment_first_index(Index, #segment{last_index = L} = S) when Index > L ->
     S#segment{entries = [], firt_index = Index};
 set_segment_first_index(Index, #segment{entries = Log} = S) ->
-    Log1 = truncate_log_before(Index, Log),
+    Log1 = truncate_log_before(Index-1, Log),
     S#segment{entries = Log1, firt_index = Index}.
 
 truncate_log_before(C, [#enrty{index = I} = E | T]) when I > C ->
@@ -916,6 +914,14 @@ handle_replicate_log(ToPeer,NextIndex,PrevTerm,Req=#append_entries{entries = fal
     zraft_peer_route:cmd(ToPeer, Req1);
 handle_replicate_log(ToPeer,NextIndex,PrevTerm,Req,State)->
     Entries = entries(NextIndex,State#fs.last_index, State),
+    case Entries of
+        [#enrty{index = NextIndex}|_]->
+            ok;
+        [#enrty{index = NextIndex1}|_]->
+            exit({error,{NextIndex1,'=/=',NextIndex}});
+        _->
+            ok
+    end,
     Commit = min(State#fs.commit,NextIndex-1+length(Entries)),
     Req1 = Req#append_entries{commit_index = Commit,entries = Entries,prev_log_term = PrevTerm},
     zraft_peer_route:cmd(ToPeer, Req1).
@@ -954,9 +960,11 @@ make_snapshot_info(Index,
 -ifdef(TEST).
 setup_log() ->
     zraft_util:set_test_dir("test-log"),
+    application:set_env(zraft_lib,max_segment_size,73),
     ok.
 stop_log(_) ->
     zraft_util:clear_test_dir("test-log"),
+    application:unset_env(zraft_lib,max_segment_size),
     ok.
 
 -define(INITIAL_ENTRY, [

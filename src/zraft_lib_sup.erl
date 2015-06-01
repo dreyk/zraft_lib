@@ -48,17 +48,26 @@ init([]) ->
 -spec start_consensus(zraft_consensus:peer_id(),module()) -> supervisor:startchild_ret().
 start_consensus(PeerID,BackEnd)->
     Spec = consensus_spec([PeerID,BackEnd]),
-    supervisor:start_child(?MODULE, Spec).
+    start_result(supervisor:start_child(?MODULE, Spec)).
 
 -spec start_consensus(zraft_consensus:peer_id()) -> supervisor:startchild_ret().
 start_consensus(PeerID)->
     Spec = consensus_spec([PeerID]),
-    supervisor:start_child(?MODULE, Spec).
+    start_result(supervisor:start_child(?MODULE, Spec)).
+
+start_result({ok,P})->
+    {ok,P};
+start_result({error,{already_started,_}})->
+    {error,already_created};
+start_result({error,already_present})->
+    {error,already_created};
+start_result(Err)->
+    Err.
 
 %% @private
-consensus_spec([PeerID|_]=Args) ->
+consensus_spec([{PeerName,_}|_]=Args) ->
     {
-        PeerID,
+        PeerName,
         {zraft_consensus, start_link,Args},
         permanent,
         5000,
