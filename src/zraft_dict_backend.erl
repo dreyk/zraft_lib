@@ -33,8 +33,12 @@ query(Fn,Dict) when is_function(Fn)->
     V = Fn(Dict),
     {ok,V};
 query(Key,Dict) ->
-    V = dict:find(Key,Dict),
-    {ok,V}.
+    case dict:find(Key,Dict) of
+        error->
+            {ok,{ok,not_found}};
+        V->
+            {ok,V}
+    end.
 
 %% @doc write data to FSM
 apply_data(List,Dict) ->

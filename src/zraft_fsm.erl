@@ -534,7 +534,7 @@ read_write() ->
         cmd(P, #leader_read_request{from = Me, request = 2}),
         receive
             {Ref, Res1} ->
-                ?assertMatch(error, Res1);
+                ?assertMatch({ok,not_found}, Res1);
             Else2 ->
                 ?assertMatch(result, Else2)
         after 1000 ->
@@ -560,7 +560,7 @@ snapshot() ->
         cmd(P, #leader_read_request{from = Me, request = 1}),
         receive
             {Ref, Res} ->
-                ?assertMatch(error, Res);
+                ?assertMatch({ok,not_found}, Res);
             Else1 ->
                 ?assertMatch(result, Else1)
         after 1000 ->
