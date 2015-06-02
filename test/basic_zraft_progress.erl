@@ -55,13 +55,13 @@ progress() ->
         {ok, Peer} = zraft_consensus:start_link(PeerName, zraft_dict_backend),
         ok = zraft_consensus:initial_bootstrap(Peer),
         true = force_timeout(Peer),
+        timer:sleep(100),
         Res1 = zraft_consensus:stat(Peer),
         ?assertMatch(
             #peer_start{
             term = 2,
             state_name = leader,
             allow_commit = true,
-            agree_index = 2,
             log_state = #log_descr{commit_index = 2,first_index = 1, last_index = 2, last_term = 2},
             leader = {test,_}
             },
@@ -179,6 +179,7 @@ progress() ->
                 entries = [#enrty{index = 4, type = ?OP_CONFIG, term = 2}]},
             Command2_5
         ),
+        timer:sleep(100),
         Res3 = zraft_consensus:stat(Peer),
         %%stable state
         ?assertMatch(
@@ -294,6 +295,7 @@ progress() ->
         Reply9 = #vote_reply{request_term = 6, granted = true, peer_term = 5, commit = 4},
         fake_reply(Command1_10, Reply9, Peer1),
         fake_reply(Command2_10, Reply9, Peer2),
+        timer:sleep(100),
         Res6 = zraft_consensus:stat(Peer),
         ?assertMatch(
             #peer_start{

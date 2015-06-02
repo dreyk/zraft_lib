@@ -111,6 +111,7 @@
     last_hearbeat,
     election_timeout,
     state_fsm,
+    quorum_counter,
     sessions = #sessions{}}).
 
 -record(config, {id, state, conf, old_peers, new_peers}).
@@ -211,8 +212,8 @@ initial_bootstrap(P) ->
 
 
 -spec sync_peer(from_peer_addr(), true|false) -> ok.
-sync_peer(P, MayBeCommit) ->
-    send_all_state_event(P, {sync_peer, MayBeCommit}).
+sync_peer(P,Sync) ->
+    send_all_state_event(P,{sync_peer,Sync}).
 
 -spec maybe_step_down(from_peer_addr(), raft_term()) -> ok.
 maybe_step_down(P, Term) ->
@@ -259,6 +260,7 @@ init_state(InitState) ->
             {stop, {error, Error}, InitState};
         {ok, Meta1} ->
             #raft_meta{current_term = CurrentTerm, back_end = BackEnd, voted_for = VotedFor} = Meta1,
+            {ok,Counter} = zraft_quorum_counter:start_link(self()),
             ConfDescr = zraft_fs_log:get_last_conf(Log),
             LogDescr = zraft_fs_log:get_log_descr(Log),
             State1 = #state{log = Log,
@@ -269,7 +271,8 @@ init_state(InitState) ->
                 id = PeerID,
                 state_fsm = FSM,
                 snapshot_info = Info,
-                election_timeout = ?ETIMEOUT
+                election_timeout = ?ETIMEOUT,
+                quorum_counter = Counter
             },
             State2 = set_config(follower, ConfDescr, State1),
             State3 = start_timer(State2),
@@ -371,7 +374,7 @@ candidate(R = #vote_reply{from_peer = PeerID, granted = Granted, epoch = Epoch},
     update_peer(PeerID, fun(P) -> P#peer{has_vote = Granted, epoch = Epoch} end, State),
     if
         Granted ->
-            maybe_become_leader(candidate, State);
+            {next_state, candidate, State};
         true ->
             case maybe_shutdown(R#vote_reply.commit, State) of
                 true ->
@@ -468,14 +471,17 @@ handle_event(Info = #snapshot_info{}, StateName, State = #state{log = Log}) ->
             ?ERROR(State, "Fail truncate log ~p", [Error]),
             {stop, {error, snapshot_failed}, State}
     end;
-handle_event({sync_peer, true}, leader, State) ->
+handle_event({sync_peer,{sync_index,AgreeIndex}}, leader, State) ->
     %%log has replicated by peer proxy
-    maybe_commit_quorum(State);
-handle_event({sync_peer, _}, leader, State) ->
-    %%Peer proxy process has received failed response
-    State1 = apply_read_requests(State),
+    maybe_commit_quorum(AgreeIndex,State);
+handle_event({sync_peer,{sync_epoch,Epoch}}, leader, State) ->
+    %%It's safe now to apply read requests
+    State1 = apply_read_requests(Epoch,State),
     {next_state, leader, State1};
-handle_event({sync_peer, _MayBeCommit}, StateName, State) ->
+handle_event({sync_peer,{sync_vote,Vote}},candidate, State) ->
+    %%It's safe now to apply read requests
+    maybe_become_leader(Vote,candidate,State);
+handle_event({sync_peer,_}, StateName, State) ->
     %%We already lost leadership
     {next_state, StateName, State};
 handle_event(#aysnc_write_request{data = Data}, leader,
@@ -496,7 +502,6 @@ handle_event(_Event, StateName, State) ->
 handle_sync_event(stat, _From, load, State) ->
     S1 = #peer_start{
         state_name = load,
-        agree_index = 0,
         allow_commit = false,
         conf = ?BLANK_CONF,
         conf_state = ?STABLE_CONF,
@@ -522,9 +527,7 @@ handle_sync_event(stat, _From, StateName, State) ->
         _ ->
             #config{conf = Conf, state = ConfState} = Config
     end,
-    AgreeIndex = quorumMin(State, #peer.last_agree_index),
     Stat = #peer_start{
-        agree_index = AgreeIndex,
         epoch = E,
         term = T,
         allow_commit = AC,
@@ -561,7 +564,6 @@ handle_sync_event(Req = #read_request{args = Args}, From, leader,
     State1 = State#state{epoch = Epoch1, sessions = Sessions#sessions{read = Requests1}},
     ok = update_peer_last_index(State1),
     replicate_peer_request(?OPTIMISTIC_REPLICATE_CMD, State1, []),
-    gen_fsm:send_all_state_event(self(), {sync_peer, false}),
     {next_state, leader, State1};
 handle_sync_event(#read_request{}, _From, StateName, State) ->
     %%Lost lidership
@@ -658,15 +660,12 @@ make_snapshot_info(StateName, From, Index, State = #state{log = Log}) ->
     {next_state, StateName, State}.
 
 %%Try commit
-maybe_commit_quorum(State) ->
+maybe_commit_quorum(AgreeIndex,State) ->
     #state{log_state = LogDescr, log = Log, current_term = CurrentTerm, epoch = Epoch} = State,
-    AgreeIndex = quorumMin(State, #peer.last_agree_index),
     if
         AgreeIndex =< LogDescr#log_descr.commit_index ->
-            %%may be need send reply for read requests.
-            State1 = apply_read_requests(State),
             %%already commited
-            {next_state, leader, State1};
+            {next_state, leader, State};
         AgreeIndex < LogDescr#log_descr.first_index ->
             {stop, {error, commit_collision}, State};
         true ->
@@ -682,18 +681,16 @@ maybe_commit_quorum(State) ->
                     #log_op_result{result = ToCommit, log_state = LogDescr1} = zraft_fs_log:update_commit_index(Log, AgreeIndex),
                     #log_descr{last_index = PrevIndex, last_term = PrevTerm} = LogDescr1,
                     %%Apply commited entry to user state
-                    zraft_fsm:apply_commit(State#state.state_fsm, ToCommit),
-                    %%may be need send reply for read requests.
-                    State2 = apply_read_requests(State1#state{log_state = LogDescr1}),
+                    zraft_fsm:apply_commit(State1#state.state_fsm, ToCommit),
                     %%may be send reply to write requests
-                    State3 = accept_write_requests(State2),
-                    State4 = accept_conf_request(State3),
+                    State2 = accept_write_requests(State1#state{log_state = LogDescr1}),
+                    State3 = accept_conf_request(State2),
                     %%Commit followers
                     OptimisticReplication =
                         zraft_log_util:append_request(Epoch, CurrentTerm, AgreeIndex, PrevIndex, PrevTerm, []),
-                    to_all_follower_peer({?OPTIMISTIC_REPLICATE_CMD, OptimisticReplication}, State4),
+                    to_all_follower_peer({?OPTIMISTIC_REPLICATE_CMD, OptimisticReplication}, State3),
                     %%Check if new config has been commited
-                    maybe_change_config(State4)
+                    maybe_change_config(State3)
             end
     end.
 commit_allowed(_Index, State = #state{allow_commit = true}) ->
@@ -950,8 +947,16 @@ append_entries(Req, State = #state{log = Log, current_term = Term, id = PeerID})
     State3 = start_timer(State2#state{last_hearbeat = CurrentTime}),
     {next_state, follower, State3}.
 
-start_election(State =
-    #state{leader = Leader, epoch = Epoch, current_term = Term, id = PeerID, log = Log, back_end = BackEnd, log_state = LogState}) ->
+start_election(State) ->
+    #state{
+        leader = Leader,
+        epoch = Epoch,
+        current_term = Term,
+        id = PeerID,
+        log = Log,
+        back_end = BackEnd,
+        log_state = LogState,
+        quorum_counter = Counter}=State,
     NextTerm = Term + 1,
     #log_descr{last_index = LastIndex, last_term = LastTerm} = LogState,
     VoteRequest = #vote_request{epoch = Epoch, term = NextTerm, from = peer(PeerID), last_index = LastIndex, last_term = LastTerm},
@@ -963,6 +968,7 @@ start_election(State =
         #raft_meta{id = PeerID, voted_for = PeerID, back_end = BackEnd, current_term = NextTerm}
     ),
     #log_descr{last_index = LastIndex, last_term = LastTerm} = LogState,
+    zraft_quorum_counter:set_state(Counter,candidate),
     update_all_peer(
         fun
             (P = #peer{id = ProxyPeer}) when ProxyPeer == PeerID ->
@@ -972,16 +978,15 @@ start_election(State =
         end, State),
 
     State1 = start_timer(State),
-    maybe_become_leader(
-        candidate,
-        State1#state{current_term = NextTerm, leader = undefined, voted_for = PeerID}
-    ).
+    {next_state,candidate,State1#state{current_term = NextTerm, leader = undefined, voted_for = PeerID}}.
 
 %%Check quorum vote
-maybe_become_leader(FallBackStateName, State) ->
-    case quorumAll(State, #peer.has_vote) of
-        true ->
-            #state{id = MyID, current_term = Term, log_state = LogDescr} = State,
+maybe_become_leader(Vote,FallBackStateName, State) ->
+    if
+        Vote ->
+            ?INFO(State,"Now is leader in term ~p",[State#state.current_term]),
+            #state{id = MyID, current_term = Term, log_state = LogDescr,quorum_counter = Counter} = State,
+            zraft_quorum_counter:set_state(Counter,leader),
             #log_descr{last_index = LastIndex} = LogDescr,
             State1 = State#state{leader = MyID, voted_for = MyID, last_hearbeat = max},
             %%reset election timer
@@ -992,7 +997,7 @@ maybe_become_leader(FallBackStateName, State) ->
             Noop = #enrty{type = ?OP_NOOP, data = <<>>, term = Term, index = LastIndex + 1},
             State3 = append([Noop], State2),
             {next_state, leader, State3};
-        _ ->
+        true ->
             {next_state, FallBackStateName, State}
     end.
 
@@ -1092,13 +1097,14 @@ set_config(StateName, {ConfID, #pconf{old_peers = Old, new_peers = New}} = PConf
                    true ->
                        undefined
                end,
-    NewPeers = join_peers({peer(PeerID), BackEnd, HearBeat}, NewPeersSet, OldPeers, []),
     ConfState = case New of
                     [] ->
                         ?STABLE_CONF;
                     _ ->
                         ?TRANSITIONAL_CONF
                 end,
+    zraft_quorum_counter:set_conf(State#state.quorum_counter,PConf,ConfState),
+    NewPeers = join_peers({peer(PeerID),State#state.quorum_counter, BackEnd, HearBeat}, NewPeersSet, OldPeers, []),
     NewConf = #config{id = ConfID, old_peers = Old, new_peers = New, conf = PConf, state = ConfState},
     State#state{config = NewConf, peers = NewPeers}.
 
@@ -1122,9 +1128,9 @@ join_peers(PeerParam, [ID1 | T1], [{ID2, P2} | T2], Acc) when ID1 < ID2 ->
 join_peers(PeerParam, [_ID1 | T1], [{ID2, P2} | T2], Acc) -> %%ID1==ID2
     join_peers(PeerParam, T1, T2, [{ID2, P2} | Acc]).
 
-make_peer({Self, BackEnd, HearBeat}, PeerID) ->
+make_peer({Self,Counter, BackEnd, HearBeat}, PeerID) ->
     {MyID, _} = Self,
-    {ok, PeerPID} = zraft_peer_proxy:start_link(Self, PeerID, BackEnd),
+    {ok, PeerPID} = zraft_peer_proxy:start_link(Self,Counter, PeerID, BackEnd),
     if
         HearBeat == undefined orelse MyID == PeerID ->
             ok;
@@ -1150,83 +1156,12 @@ proxy_stats(#state{peers = Peers}) ->
     Res = collect_results(Count, Ref, []),
     lists:ukeysort(1, Res).
 
-
-quorumMin(#state{config = ?BLANK_CONF}, _GetIndex) ->
-    0;
-quorumMin(#state{config = Conf, peers = Peers}, GetIndex) ->
-    #config{state = ConfState, old_peers = OldPeers} = Conf,
-    case ConfState of
-        ?TRANSITIONAL_CONF ->
-            erlang:min(
-                quorumMin(OldPeers, Peers, GetIndex),
-                quorumMin(Conf#config.new_peers, Peers, GetIndex)
-            );
-        _ ->
-            quorumMin(OldPeers, Peers, GetIndex)
-    end.
-
-quorumAll(#state{config = Conf, peers = Peers}, GetIndex) ->
-    #config{state = ConfState, old_peers = OldPeers} = Conf,
-    case ConfState of
-        ?TRANSITIONAL_CONF ->
-            quorumAll(OldPeers, Peers, GetIndex) andalso quorumAll(Conf#config.new_peers, Peers, GetIndex);
-        _ ->
-            quorumAll(OldPeers, Peers, GetIndex)
-    end.
-
-quorumMin([], _AllPeers, _GetIndex) ->
-    0;
-quorumMin(Peers, AllPeers, GetIndex) ->
-    Ref = make_ref(),
-    {Vals, Count} = quorumMin(Peers, AllPeers, {Ref, self()}, GetIndex, 0),
-    Vals1 = lists:sort(Vals),
-    At = erlang:trunc((Count - 1) / 2),
-    lists:nth(At + 1, Vals1).
-
-quorumMin([], _, {Ref, _}, _GetIndex, Count) ->
-    Vals = collect_results(Count, Ref, []),
-    {Vals, Count};
-quorumMin([ID1 | T1], [{ID2, _P2} | T2], Ref, GetIndex, Count) when ID1 > ID2 ->
-    quorumMin([ID1 | T1], T2, Ref, GetIndex, Count);
-quorumMin([ID1 | _T1], [{ID2, _P2} | _T2], _Ref, _GetIndex, _Count) when ID1 < ID2 ->
-    exit({error, iconfig});
-quorumMin([_ID1 | T1], [{_ID2, P2} | T2], Ref, GetIndex, Count) ->%%ID1==ID2
-    zraft_peer_proxy:value(P2, Ref, GetIndex),
-    quorumMin(T1, T2, Ref, GetIndex, Count + 1).
-
 collect_results(0, _Ref, Acc) ->
     Acc;
 collect_results(Count, Ref, Acc) ->
     receive
         {Ref, V} ->
             collect_results(Count - 1, Ref, [V | Acc])
-    end.
-
-quorumAll([], _AllPeers, _GetIndex) ->
-    true;
-quorumAll(Peers, AllPeers, GetIndex) ->
-    Ref = make_ref(),
-    quorumAll(Peers, AllPeers, {Ref, self()}, GetIndex, 0).
-
-quorumAll([], _, {Ref, _}, _GetIndex, Count) ->
-    TrueCount = collect_all(Count, Ref, 0),
-    TrueCount >= (erlang:trunc(Count / 2) + 1);
-quorumAll([ID1 | T1], [{ID2, _P2} | T2], Ref, GetIndex, Count) when ID1 > ID2 ->
-    quorumAll([ID1 | T1], T2, Ref, GetIndex, Count);
-quorumAll([ID1 | _T1], [{ID2, _P2} | _T2], _Ref, _GetIndex, _Count) when ID1 < ID2 ->
-    exit({error, iconfig});
-quorumAll([_ID1 | T1], [{_ID2, P2} | T2], Ref, GetIndex, Count) ->%%ID1==ID2
-    zraft_peer_proxy:value(P2, Ref, GetIndex),
-    quorumAll(T1, T2, Ref, GetIndex, Count + 1).
-
-collect_all(0, _Ref, Acc) ->
-    Acc;
-collect_all(Count, Ref, Acc) ->
-    receive
-        {Ref, true} ->
-            collect_all(Count - 1, Ref, Acc + 1);
-        {Ref, _} ->
-            collect_all(Count - 1, Ref, Acc)
     end.
 
 append(Entries, State = #state{log = Log}) ->
@@ -1236,7 +1171,6 @@ append(Entries, State = #state{log = Log}) ->
     State2 = set_config(leader, NewConf, State1),
     ok = update_peer_last_index(State2),
     replicate_peer_request(?OPTIMISTIC_REPLICATE_CMD, State2, Entries),
-    gen_fsm:send_all_state_event(self(), {sync_peer, true}),
     State2.
 
 
@@ -1252,7 +1186,7 @@ start_timer(State = #state{id = ID, timer = Timer, election_timeout = Timeout}) 
         true ->
             gen_fsm:cancel_timer(Timer)
     end,
-    Timeout1 = zraft_util:random(ID, Timeout) + Timeout,
+    Timeout1 = round(zraft_util:random(ID, Timeout)*1.5) + Timeout,
     NewTimer = gen_fsm:send_event_after(Timeout1, timeout),
     State#state{timer = NewTimer}.
 
@@ -1280,6 +1214,7 @@ update_peer(PeerID, Fun, State) ->
     to_peer(PeerID, {?UPDATE_CMD, Fun}, State).
 
 lost_leadership(StateName, State) when StateName == leader orelse StateName == candidate ->
+    zraft_quorum_counter:set_state(State#state.quorum_counter,follower),
     to_all_peer(?LOST_LEADERSHIP_CMD, State);
 lost_leadership(_, _State) ->
     ok.
@@ -1342,11 +1277,10 @@ reset_write_requests(State = #state{sessions = Sessions, leader = Leader}) ->
         reset_request(Req, {leader, Leader}) end, Requests),
     State#state{sessions = Sessions#sessions{write = []}}.
 
-apply_read_requests(State = #state{allow_commit = false}) ->
+apply_read_requests(_Epoch,State = #state{allow_commit = false}) ->
     State;
-apply_read_requests(State = #state{sessions = Sessions}) ->
+apply_read_requests(Epoch,State = #state{sessions = Sessions}) ->
     #sessions{read = Requests} = Sessions,
-    Epoch = quorumMin(State, #peer.epoch),
     Requests1 = apply_read_requests(Epoch, Requests, State),
     State#state{sessions = Sessions#sessions{read = Requests1}}.
 
@@ -1507,12 +1441,13 @@ bootstrap() ->
         ?assertMatch([#enrty{term = 1, index = 1, type = ?OP_CONFIG, data = #pconf{old_peers = [Peer]}}],
             Entries),
         cancel_timer(State1),
-        {next_state, leader, State2} = follower(timeout, State1),
-        ?assertEqual(2, State2#state.current_term),
-        ?assertEqual(undefined, State2#state.timer),
+        {next_state,candidate, State2} = follower(timeout, State1),
+        {next_state,leader,State3}=handle_event({sync_peer,{sync_vote,true}},candidate, State2),
+        ?assertEqual(2, State3#state.current_term),
+        ?assertEqual(undefined, State3#state.timer),
         ?assertMatch(#log_descr{commit_index = 0, first_index = 1, last_index = 2, last_term = 2},
-            State2#state.log_state),
-        Entries1 = zraft_fs_log:get_entries(State1#state.log, 2, 2),
+            State3#state.log_state),
+        Entries1 = zraft_fs_log:get_entries(State3#state.log, 2, 2),
         ?assertMatch([#enrty{term = 2, index = 2, type = ?OP_NOOP}], Entries1)
     end}.
 

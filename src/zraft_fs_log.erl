@@ -504,7 +504,7 @@ new_segment(Index, FS = #fs{fcounter = N, log_dir = Dir, max_segment_size = Size
 
 new_file(Dir, N, MaxSize) ->
     FName = filename:join(Dir, "open-" ++ integer_to_list(N) ++ ".rlog"),
-    {ok, FD} = file:open(FName, [write, binary]),
+    {ok, FD} = file:open(FName, [write, binary,raw]),
     file:allocate(FD, 0, MaxSize),
     ok = file:write(FD, <<?SEGMENT_VERSION:8>>),
     ok = file:datasync(FD),

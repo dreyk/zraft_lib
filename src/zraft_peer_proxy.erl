@@ -33,7 +33,7 @@
 
 -behaviour(gen_server).
 
--export([start_link/3]).
+-export([start_link/4]).
 
 -export([init/1,
     handle_call/3,
@@ -52,6 +52,7 @@
     peer,
     remote_peer_id,
     raft,
+    quorum_counter,
     request_timer,
     hearbeat_timer,
     request_ref,
@@ -78,10 +79,10 @@ stop_sync(Peer) ->
 cmd(Peer, Cmd) ->
     gen_server:cast(Peer, Cmd).
 
-start_link(Raft, PeerID, BackEnd) ->
-    gen_server:start_link(?MODULE, [Raft, PeerID, BackEnd], []).
+start_link(Raft,QuorumCounter,PeerID, BackEnd) ->
+    gen_server:start_link(?MODULE, [Raft,QuorumCounter,PeerID, BackEnd], []).
 
-init([Raft, PeerID, BackEnd]) ->
+init([Raft,QuorumCounter,PeerID, BackEnd]) ->
     gen_server:cast(self(), start_peer),
     %%brodcast up message. To prevent restarted peer become leader. ReqTimeout is double election timeout
     case Raft of
@@ -91,7 +92,13 @@ init([Raft, PeerID, BackEnd]) ->
             zraft_peer_route:cmd(PeerID,{peer_up,Raft})
     end,
     ReqTimeout = zraft_consensus:get_election_timeout()*2,
-    {ok, #state{raft = Raft, back_end = BackEnd, peer = #peer{id = PeerID}, request_timeout = ReqTimeout}}.
+    {ok, #state{
+        raft = Raft,
+        quorum_counter = QuorumCounter,
+        back_end = BackEnd,
+        peer = #peer{id = PeerID},
+        request_timeout = ReqTimeout
+    }}.
 
 handle_call(force_hearbeat_timeout, _, State = #state{hearbeat_timer = Timer}) ->
     if
@@ -210,7 +217,7 @@ handle_cast({?OPTIMISTIC_REPLICATE_CMD, Req}, State) ->%%snapshot are being copi
 
 handle_cast(#append_reply{from_peer = From,epoch = Epoch, success = true, agree_index = Index, request_ref = RF},
     State = #state{force_request = FR, request_ref = RF}) ->
-    State1 = update_peer(true, Index, Index + 1, Epoch,From,State),
+    State1 = update_peer(Index, Index + 1, Epoch,From,State),
     State2 = reset_timers(true, State1),
     State3 = if
                  FR ->
@@ -278,7 +285,7 @@ handle_cast(#install_snapshot_reply{from_peer = From,result = hearbeat, request_
     {noreply, State3};
 handle_cast(#install_snapshot_reply{index = Index,from_peer = From, result = finish, request_ref = RF, epoch = Epoch},
     State = #state{request_ref = RF}) ->
-    State1 = update_peer(true, Index, Index + 1, Epoch,From, State),
+    State1 = update_peer(Index, Index + 1, Epoch,From, State),
     State2 = reset_snapshot(State1),
     progress(State2#state{force_request = true});
 
@@ -301,8 +308,9 @@ handle_cast(#install_snapshot_reply{from_peer = From,request_ref = RF, epoch = E
 handle_cast(#install_snapshot_reply{}, State) ->%%Out of date responce
     {noreply, State};
 
-handle_cast({?UPDATE_CMD, Fun}, State = #state{peer = Peer}) ->
+handle_cast({?UPDATE_CMD, Fun}, State = #state{peer = Peer,quorum_counter = C}) ->
     Peer1 = Fun(Peer),
+    zraft_quorum_counter:sync(C,Peer1),
     {noreply, State#state{peer = Peer1}};
 handle_cast({get, From, GetIndex}, State = #state{peer = Peer}) ->
     reply(From, erlang:element(GetIndex, Peer)),
@@ -505,18 +513,37 @@ start_copy_snapshot(#install_snapshot_reply{port = Port, addr = Addr},
     {PID, MRef} = spawn_monitor(Fun),
     State#state{snapshot_progres = P#snapshot_progress{mref = MRef, process = PID}}.
 
-update_peer(Epoch,From,State = #state{peer = Peer, raft = Raft}) ->
-    Peer1 = Peer#peer{epoch = Epoch},
-    zraft_consensus:sync_peer(Raft, flase),
-    State#state{peer = Peer1,remote_peer_id = From}.
-update_peer(NextIndex, Epoch,From,State = #state{peer = Peer, raft = Raft}) ->
-    Peer1 = Peer#peer{epoch = Epoch, next_index = NextIndex},
-    zraft_consensus:sync_peer(Raft, false),
-    State#state{peer = Peer1,remote_peer_id = From}.
-update_peer(MayBeCommit, LastIndex, NextIndex, Epoch,From, State = #state{peer = Peer, raft = Raft}) ->
-    Peer1 = Peer#peer{epoch = Epoch, last_agree_index = LastIndex, next_index = NextIndex},
-    zraft_consensus:sync_peer(Raft, MayBeCommit),
-    State#state{peer = Peer1,remote_peer_id = From}.
+update_peer(E2,From,State = #state{peer = Peer=#peer{epoch = E1}}) ->
+    if
+        E1==E2->
+            State#state{remote_peer_id = From};
+        true->
+            Peer1 = Peer#peer{epoch = E2},
+            change_peer(From,Peer1,State)
+    end.
+update_peer(NextIndex,E2,From,State = #state{peer = Peer=#peer{epoch = E1}}) ->
+    if
+        E1==E2->
+            Peer1 = Peer#peer{next_index = NextIndex},
+            State#state{remote_peer_id = From,peer = Peer1};
+        true->
+            Peer1 = Peer#peer{epoch = E2,next_index = NextIndex},
+            change_peer(From,Peer1,State)
+    end.
+update_peer(L2, NextIndex, E2,From, State = #state{peer = Peer}) ->
+    #peer{last_agree_index = L1,epoch = E1}=Peer,
+    if
+        L1==L2 andalso E1==E2->
+            Peer1 = Peer#peer{next_index = NextIndex},
+            State#state{remote_peer_id = From,peer = Peer1};
+        true->
+            Peer1 = Peer#peer{epoch = E2,next_index = NextIndex,last_agree_index = L2},
+            change_peer(From,Peer1,State)
+    end.
+
+change_peer(From,Peer,State=#state{quorum_counter = C})->
+    zraft_quorum_counter:sync(C,Peer),
+    State#state{peer = Peer,remote_peer_id = From}.
 
 print_id(#state{raft = Raft,peer = #peer{id = ProxyID}})->
     PeerID = zraft_util:peer_id(Raft),
@@ -531,6 +558,7 @@ setup_peer() ->
     meck:new(zraft_peer_route, [passthrough]),
     meck:new(zraft_consensus),
     meck:new(zraft_snapshot_receiver,[passthrough]),
+    meck:new(zraft_quorum_counter),
     meck:expect(zraft_consensus, get_election_timeout, fun() -> 1000 end),
     meck:expect(zraft_peer_route, start_peer, fun(PeerToStart, BackEnd) ->
         ?debugFmt("Starting ~p:~s", [PeerToStart, BackEnd]), ok end),
@@ -540,6 +568,7 @@ setup_peer() ->
     ok.
 stop_peer(_) ->
     meck:unload(zraft_peer_route),
+    meck:unload(zraft_quorum_counter),
     meck:unload(zraft_consensus),
     meck:unload(zraft_snapshot_receiver),
     ok.
@@ -561,14 +590,14 @@ commands() ->
         Me = self(),
         Raft = {{test, node()}, Me},
         PeerID = {test1, node()},
-        {ok, Proxy} = start_link(Raft, PeerID, zraft_dict_backend),
+        {ok, Proxy} = start_link(Raft,Me, PeerID, zraft_dict_backend),
         meck:expect(zraft_consensus, replicate_log,
             fun(_, _, Req) ->
                 Me ! {replicate_log, Req}
             end),
-        meck:expect(zraft_consensus, sync_peer,
-            fun(_, MayBeCommit) ->
-                Me ! {sync, MayBeCommit}
+        meck:expect(zraft_quorum_counter, sync,
+            fun(_,P) ->
+                Me ! P
             end),
         meck:expect(zraft_peer_route, cmd, fun(_, Req) ->
             Me ! {cmd, Req}
@@ -596,8 +625,6 @@ commands() ->
             R4
         ),
         fake_append_reply(Proxy, R4, #append_reply{term = 5, agree_index = 0, last_index = 7, success = false}),
-        R5 = wait_request(),
-        ?assertMatch({sync, false}, R5),
         R6 = wait_request(),
         ?assertMatch(
             {replicate_log, #append_entries{entries = false, prev_log_index = 4, prev_log_term = 0, term = 0, epoch = 0}},
@@ -605,7 +632,7 @@ commands() ->
         ),
         fake_append_reply(Proxy, R6, #append_reply{term = 5, agree_index = 4, last_index = 4, success = true}),
         R7 = wait_request(),
-        ?assertMatch({sync, true}, R7),
+        ?assertMatch(#peer{last_agree_index = 4}, R7),
         %%start replicaterion
         R8 = wait_request(),
         ?assertMatch(
@@ -613,8 +640,6 @@ commands() ->
             R8
         ),
         fake_append_reply(Proxy, R8, #append_reply{term = 5, last_index = 4, success = false}),
-        R9 = wait_request(),
-        ?assertMatch({sync, false}, R9),
         R10 = wait_request(),
         ?assertMatch(
             {replicate_log, #append_entries{entries = true, prev_log_index = 3, prev_log_term = 0, term = 0, epoch = 0}},
@@ -622,7 +647,7 @@ commands() ->
         ),
         fake_append_reply(Proxy, R10, #append_reply{term = 5, last_index = 5, agree_index = 5, success = true}),
         R11 = wait_request(),
-        ?assertMatch({sync, true}, R11),
+        ?assertMatch(#peer{last_agree_index = 5}, R11),
         R12 = gen_server:call(Proxy, force_request_timeout),
         ?assertEqual(no_timer, R12),
         R13 = gen_server:call(Proxy, force_hearbeat_timeout),
@@ -633,8 +658,6 @@ commands() ->
             R14
         ),
         fake_append_reply(Proxy, R14, #append_reply{term = 5, last_index = 5, agree_index = 5, success = true}),
-        R15 = wait_request(),
-        ?assertMatch({sync, true}, R15),
         R16 = gen_server:call(Proxy, force_request_timeout),
         ?assertEqual(no_timer, R16),
         cmd(Proxy, {?OPTIMISTIC_REPLICATE_CMD,
@@ -652,7 +675,7 @@ commands() ->
         ),
         fake_append_reply(Proxy, R17, #append_reply{term = 6, last_index = 6, agree_index = 6, success = true}),
         R18 = wait_request(),
-        ?assertMatch({sync, true}, R18),
+        ?assertMatch(#peer{last_agree_index = 6}, R18),
         S1 = sys:get_state(Proxy),
         ?assertMatch(
             #state{
@@ -691,7 +714,7 @@ commands() ->
         ),
         fake_snapshot_reply(PeerID,R20,#install_snapshot_reply{result=start,index = 3,addr = 1,port = 1,term = 6}),
         R21 = wait_request(),
-        ?assertMatch({sync,flase}, R21),
+        ?assertMatch(#peer{epoch = 7}, R21),
         R22 = wait_request(),
         ?assertMatch(
             {
@@ -702,7 +725,7 @@ commands() ->
         ),
         fake_snapshot_reply(PeerID,R22,#install_snapshot_reply{result=finish,index = 3,term = 6}),
         R23 = wait_request(),
-        ?assertMatch({sync,true}, R23),
+        ?assertMatch(#peer{last_agree_index = 3}, R23),
         R24 = wait_request(),
         ?assertMatch(
             {replicate_log, #append_entries{entries = true, prev_log_index = 3, prev_log_term = 0, term = 0, epoch = 0}},

@@ -62,6 +62,7 @@ progress() ->
         {ok, Peer3} = zraft_consensus:start_link(PeerID3, zraft_dict_backend),
         ok = zraft_consensus:initial_bootstrap(Peer1),
         true = force_timeout(Peer1),
+        ok = wait_leadership(Peer1,2,1),
         Res1 = zraft_consensus:stat(Peer1),
         ?assertMatch(
             #peer_start{
@@ -202,6 +203,14 @@ progress() ->
         ok = zraft_consensus:stop(Peer33)
     end}.
 
+wait_leadership(Peer,Commit, Attempt) ->
+    case zraft_consensus:stat(Peer) of
+        #peer_start{state_name = leader,log_state = #log_descr{commit_index = Commit}} ->
+            ok;
+        #peer_start{} ->
+            ?debugFmt("Wait leader attempt - ~p",[Attempt]),
+            wait_leadership(Peer,Commit, Attempt + 1)
+    end.
 wait_leader(Peer, Attempt) ->
     timer:sleep(500),
     case zraft_consensus:stat(Peer) of

@@ -59,7 +59,7 @@
 
 -record(leader_read_request,{from,request}).
 
--record(peer_start,{agree_index,epoch,term,allow_commit,leader,back_end,log_state,snapshot_info,conf,conf_state,state_name,proxy_peer_stats=[]}).
+-record(peer_start,{epoch,term,allow_commit,leader,back_end,log_state,snapshot_info,conf,conf_state,state_name,proxy_peer_stats=[]}).
 -record(proxy_peer_stat,{peer_state,is_snapshoting}).
 
 -ifdef(TEST).
