@@ -41,7 +41,10 @@ query(Key,Dict) ->
     end.
 
 %% @doc write data to FSM
-apply_data(List,Dict) ->
+apply_data({K,V},Dict)->
+    Dict1 = dict:store(K,V,Dict),
+    {ok,Dict1};
+apply_data(List,Dict) when is_list(List)->
     Dict1 = lists:foldl(fun({K,V},Acc)->
         dict:store(K,V,Acc) end,Dict,List),
     {ok,Dict1}.

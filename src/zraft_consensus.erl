@@ -93,7 +93,7 @@
 -define(ETIMEOUT, zraft_util:get_env(?ELECTION_TIMEOUT_PARAM, ?ELECTION_TIMEOUT)).
 
 -record(init_state, {log, fsm, id, back_end, snapshot_info, async, bootstrap = false}).
--record(sessions, {read = [], write = [], conf}).
+-record(sessions, {read = [], conf}).
 -record(state, {
     log,
     config,
@@ -118,8 +118,6 @@
 -record(read_request, {function, args, start_time, timeout}).
 -record(read_request_local, {function, args}).
 -record(conf_change_requet, {prev_id, start_time, timeout, from, peers, index}).
--record(write_request, {data, start_time, timeout, from}).
--record(aysnc_write_request, {data}).
 -type raft_term() :: non_neg_integer().
 -type index() :: non_neg_integer().
 -type peer_name() :: atom().
@@ -159,14 +157,13 @@ get_conf(PeerID, Timeout) ->
 %% @doc Write data to user backend
 -spec write(peer_id(), term(), timeout()) -> ok|{leader, peer_id()}|{error, timeout}.
 write(PeerID, Data, Timeout) ->
-    Now = os:timestamp(),
-    Req = #write_request{timeout = Timeout, data = Data, start_time = Now},
+    Req = #write{data = Data},
     gen_fsm:sync_send_all_state_event(PeerID, Req, Timeout).
 
 %% @doc Async write data to user backend
 -spec write_async(peer_id(), term()) -> ok.
 write_async(PeerID, Data) ->
-    Req = #aysnc_write_request{data = Data},
+    Req = #write{data = Data},
     gen_fsm:send_all_state_event(PeerID, Req).
 
 %% @doc Write data to user backend
@@ -484,16 +481,16 @@ handle_event({sync_peer,{sync_vote,Vote}},candidate, State) ->
 handle_event({sync_peer,_}, StateName, State) ->
     %%We already lost leadership
     {next_state, StateName, State};
-handle_event(#aysnc_write_request{data = Data}, leader,
+handle_event(Req=#write{}, leader,
     State = #state{log_state = LogState, current_term = Term}) ->
     %%Try replicate new entry.
     %%Response will be sended after entry will be ready to commit
     #log_descr{last_index = I} = LogState,
     NextIndex = I + 1,
-    Entry = #enrty{term = Term, index = NextIndex, type = ?OP_DATA, data = Data},
+    Entry = #enrty{term = Term, index = NextIndex, type = ?OP_DATA, data = Req},
     State1 = append([Entry], State),
     {next_state, leader, State1};
-handle_event(#aysnc_write_request{}, StateName, State) ->
+handle_event(#write{}, StateName, State) ->
     %%Ignore request
     {next_state, StateName, State};
 handle_event(_Event, StateName, State) ->
@@ -569,26 +566,16 @@ handle_sync_event(#read_request{}, _From, StateName, State) ->
     %%Lost lidership
     %%Hint new leader in respose
     {reply, {leader, State#state.leader}, StateName, State};
-handle_sync_event(Req = #write_request{}, From, leader,
-    State = #state{sessions = Sessions, log_state = LogState, current_term = Term}) ->
-    #sessions{write = Requests} = Sessions,
+handle_sync_event(Req = #write{}, From, leader,
+    State = #state{log_state = LogState, current_term = Term}) ->
     %%Try replicate new entry.
     %%Response will be sended after entry will be ready to commit
     #log_descr{last_index = I} = LogState,
     NextIndex = I + 1,
-    Entry = #enrty{term = Term, index = NextIndex, type = ?OP_DATA, data = Req#write_request.data},
-    State1 = #state{log_state = LogState1} = append([Entry], State),
-    if
-        LogState1#log_descr.commit_index >= NextIndex ->
-            %%TODO: is't possible?
-            {reply, ok, leader, State1};
-        true ->
-            Req1 = Req#write_request{data = <<>>, from = From},
-            Requests1 = [{NextIndex, Req1} | Requests],
-            State2 = State1#state{sessions = Sessions#sessions{write = Requests1}},
-            {next_state, leader, State2}
-    end;
-handle_sync_event(#write_request{}, _From, StateName, State) ->
+    Entry = #enrty{term = Term, index = NextIndex, type = ?OP_DATA, data = Req#write{from = From}},
+    State1 = append([Entry], State),
+    {next_state, leader, State1};
+handle_sync_event(#write{}, _From, StateName, State) ->
     %%Lost lidership
     %%Hint new leader in respose
     {reply, {leader, State#state.leader}, StateName, State};
@@ -682,15 +669,13 @@ maybe_commit_quorum(AgreeIndex,State) ->
                     #log_descr{last_index = PrevIndex, last_term = PrevTerm} = LogDescr1,
                     %%Apply commited entry to user state
                     zraft_fsm:apply_commit(State1#state.state_fsm, ToCommit),
-                    %%may be send reply to write requests
-                    State2 = accept_write_requests(State1#state{log_state = LogDescr1}),
-                    State3 = accept_conf_request(State2),
+                    State2 = accept_conf_request(State1#state{log_state = LogDescr1}),
                     %%Commit followers
                     OptimisticReplication =
                         zraft_log_util:append_request(Epoch, CurrentTerm, AgreeIndex, PrevIndex, PrevTerm, []),
-                    to_all_follower_peer({?OPTIMISTIC_REPLICATE_CMD, OptimisticReplication}, State3),
+                    to_all_follower_peer({?OPTIMISTIC_REPLICATE_CMD, OptimisticReplication}, State2),
                     %%Check if new config has been commited
-                    maybe_change_config(State3)
+                    maybe_change_config(State2)
             end
     end.
 commit_allowed(_Index, State = #state{allow_commit = true}) ->
@@ -1253,8 +1238,7 @@ to_peer(PeerID, Cmd, #state{peers = Peers}) ->
 
 reset_requests(State) ->
     State1 = reset_read_requests(State),
-    State2 = reset_write_requests(State1),
-    reset_conf_request(State2).
+    reset_conf_request(State1).
 
 reset_conf_request(State = #state{sessions = #sessions{conf = undefined}}) ->
     State;
@@ -1269,13 +1253,6 @@ reset_read_requests(State = #state{sessions = Sessions, leader = Leader}) ->
         reset_request(Req, {leader, Leader}) end, Requests),
     State#state{sessions = Sessions#sessions{read = []}}.
 
-reset_write_requests(State = #state{sessions = #sessions{write = []}}) ->
-    State;
-reset_write_requests(State = #state{sessions = Sessions, leader = Leader}) ->
-    #sessions{write = Requests} = Sessions,
-    lists:foreach(fun({_, Req}) ->
-        reset_request(Req, {leader, Leader}) end, Requests),
-    State#state{sessions = Sessions#sessions{write = []}}.
 
 apply_read_requests(_Epoch,State = #state{allow_commit = false}) ->
     State;
@@ -1307,8 +1284,6 @@ apply_read_requests(_E1, Requests, State) ->
 check_request_timeout(Req = #conf_change_requet{start_time = Start, timeout = Timeout}) ->
     check_request_timeout(Req, Start, Timeout);
 check_request_timeout(Req = #read_request{start_time = Start, timeout = Timeout}) ->
-    check_request_timeout(Req, Start, Timeout);
-check_request_timeout(Req = #write_request{start_time = Start, timeout = Timeout}) ->
     check_request_timeout(Req, Start, Timeout).
 check_request_timeout(Req, Start, Timeout) ->
     case zraft_util:is_expired(Start, Timeout) of
@@ -1319,8 +1294,6 @@ check_request_timeout(Req, Start, Timeout) ->
             true
     end.
 reset_request(#conf_change_requet{from = From}, Reason) ->
-    gen_fsm:reply(From, Reason);
-reset_request(#write_request{from = From}, Reason) ->
     gen_fsm:reply(From, Reason);
 reset_request(#read_request{args = [From | _]}, Reason) ->
     gen_fsm:reply(From, Reason).
@@ -1358,31 +1331,6 @@ accept_conf_request(State = #state{sessions = Sessions, log_state = LogState, co
         _ ->
             State#state{sessions = Sessions#sessions{conf = undefined}}
     end.
-
-accept_write_requests(State = #state{sessions = Sessions, log_state = LogState}) ->
-    #sessions{write = Requests} = Sessions,
-    #log_descr{commit_index = I} = LogState,
-    Requests1 = accept_write_requests(I, Requests),
-    State#state{sessions = Sessions#sessions{write = Requests1}}.
-
-accept_write_requests(_I1, []) ->
-    [];
-accept_write_requests(I1, [{I2, Req} | T]) when I2 > I1 ->
-    case check_request_timeout(Req) of
-        true ->
-            [{I2, Req} | accept_write_requests(I1, T)];
-        _ ->
-            accept_write_requests(I1, T)
-    end;
-accept_write_requests(_E1, Requests) ->
-    lists:foreach(fun({_, Req}) ->
-        case check_request_timeout(Req) of
-            true ->
-                gen_fsm:reply(Req#write_request.from, ok);
-            _ ->
-                ok
-        end end, Requests),
-    [].
 
 
 stop_all_peer(#state{peers = Peers}) ->

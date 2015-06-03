@@ -36,7 +36,7 @@
 -callback query(read_cmd(),state()) -> {ok,term()}.
 
 %% write data to FSM
--callback apply_data([write_cmd()],state()) -> {ok,state()}.
+-callback apply_data(write_cmd(),state()) -> {term(),state()}.
 
 %% Prepare FSM to take snapshot asycn if it's possible otherwice return function to take snapshot immediatly
 -callback snapshot(state())->{sync,snapshot_fun()} | {async,snapshot_fun()}.

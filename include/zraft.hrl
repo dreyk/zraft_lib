@@ -61,6 +61,8 @@
 
 -record(peer_start,{epoch,term,allow_commit,leader,back_end,log_state,snapshot_info,conf,conf_state,state_name,proxy_peer_stats=[]}).
 -record(proxy_peer_stat,{peer_state,is_snapshoting}).
+-record(swrite,{data,message_id,from}).%%write in session
+-record(write,{data,from}).%%optimistic write
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").

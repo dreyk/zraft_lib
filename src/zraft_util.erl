@@ -38,7 +38,16 @@
     set_test_dir/1,
     clear_test_dir/1,
     is_expired/2,
-    random/2]).
+    random/2,
+    now_millisec/0,
+    timestamp_millisec/1
+]).
+
+now_millisec()->
+   {Mega,S,Micro} = os:timestamp(),
+   (Mega*1000000+S)*1000+(Micro div 1000).
+timestamp_millisec({Mega,S,Micro})->
+    (Mega*1000000+S)*1000+(Micro div 1000).
 
 peer_name({Name,Node}) when is_atom(Name)->
     atom_to_list(Name)++"-"++node_name(Node);

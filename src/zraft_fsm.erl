@@ -58,6 +58,7 @@
 
 -record(state, {
     raft,
+    sessions,
     ustate,
     back_end,
     last_index = 0,
@@ -72,6 +73,7 @@
 -record(snapshoter, {pid, seq, last_index, dir, mref, log_count, file, type, from}).
 
 -spec start_link(zraft_concensus:from_peer_addr(), module()) -> {ok, pid()} | {error, term()}.
+
 start_link(Raft, BackEnd) ->
     gen_server:start_link(?MODULE, [Raft, BackEnd], []).
 
@@ -139,9 +141,9 @@ handle_cast(Req = #install_snapshot{data = finish}, State) ->
 handle_cast(#leader_read_request{from = From, request = Query}, State = #state{back_end = BackEnd, ustate = UState}) ->
     case BackEnd:query(Query, UState) of
         {ok, Res} ->
-            gen_fsm:reply(From, Res);
+            reply_caller(From, Res);
         {error, Err} ->
-            gen_fsm:reply(From, {error, Err})
+            reply_caller(From, {error, Err})
     end,
     {noreply, State};
 handle_cast(_, State) ->
@@ -195,25 +197,30 @@ append([], State) ->
     {noreply, State};
 append(Entries, State) ->
     #state{last_index = LastIndex, back_end = BackEnd, ustate = UState, log_count = Count} = State,
-    {ToApply, Count1, LastIndex1} = lists:foldr(fun(E, {ApplyAcc, CountAcc,IndexAcc}) ->
-        case E#enrty.type of
-            ?OP_DATA ->
-                {[E#enrty.data | ApplyAcc], CountAcc + 1, max(E#enrty.index,IndexAcc)};
-            _ ->
-                {ApplyAcc, CountAcc + 1, max(E#enrty.index,IndexAcc)}
-        end end, {[], Count, LastIndex}, Entries),
-    case ToApply of
-        [] ->
-            %%just truncate log
-            maybe_take_snapshost(Count1, State#state{last_index = LastIndex1});
-        _ ->
-            case BackEnd:apply_data(ToApply, UState) of
-                {ok, UState1} ->
-                    maybe_take_snapshost(Count1, State#state{last_index = LastIndex1, ustate = UState1});
-                Else ->
-                    {stop, Else, State}
-            end
-    end.
+    {UState1,Count1, LastIndex1} = lists:foldl(fun(E, {UStateAcc,CountAcc,IndexAcc}) ->
+        #enrty{index = EI,type = Type} = E,
+        if
+            EI =< LastIndex->
+                ?WARNING(State,"Try applt old entry ~p then last applied~p",[E#enrty.index,LastIndex]),
+                exit({error,old_entry}),
+                {UStateAcc,CountAcc,IndexAcc};
+            true->
+                if
+                    Type==?OP_DATA->
+                        case E#enrty.data of
+                            #write{data = Data,from = From}->
+                                {Result,NewUState}=BackEnd:apply_data(Data,UStateAcc),
+                                reply_caller(From,Result),
+                                {NewUState,CountAcc+1,EI};
+                            Else->
+                                ?WARNING(State,"Unknow data value ~p",[Else]),
+                                {UStateAcc,CountAcc+1,EI}
+                        end;
+                    true->
+                        {UStateAcc,CountAcc+1,EI}
+                end
+        end end,{UState, Count, LastIndex}, Entries),
+    maybe_take_snapshost(Count1, State#state{last_index = LastIndex1, ustate = UState1}).
 
 
 clean_dir(Dir) ->
@@ -338,7 +345,16 @@ install_answer(Raft,#install_snapshot{epoch = E, term = T, request_ref = Ref, in
     }.
 
 take_snapshost(Count,
-    State = #state{raft = Raft, back_end = BackEnd, ustate = UState, last_index = LastIndex, dir = Dir, snapshot_count = SN}) ->
+    State) ->
+    #state{
+        raft = Raft,
+        back_end = BackEnd,
+        ustate = UState,
+        last_index = LastIndex,
+        dir = Dir,
+        snapshot_count = SN,
+        sessions = Sessions
+    } = State,
     ResultFile = case ?SNAPSHOT_BACKUP of
                      true ->
                          filename:join(Dir, "archive.tmp-" ++ integer_to_list(SN));
@@ -346,7 +362,10 @@ take_snapshost(Count,
                          undefined
                  end,
     SnapshotDir = filename:join(Dir, "snapshot.tmp-" ++ integer_to_list(SN)),
+    ok = zraft_util:make_dir(SnapshotDir),
     DataDir = filename:join(SnapshotDir, "data"),
+    SessionsFile = filename:join(SnapshotDir,"sessions"),
+    ok = ets:tab2file(Sessions,SessionsFile),
     ok = zraft_util:make_dir(DataDir),
     {ok, Writer} = zraft_snapshot_writer:start(Raft, self(), LastIndex, ResultFile, SnapshotDir),
     Mref = erlang:monitor(process, Writer),
@@ -452,17 +471,42 @@ finish_snapshot(State) ->
     end.
 
 install_snapshot(State = #state{last = 0, back_end = BackEnd, raft = Raft}) ->
+    Sessions = ets:new(session_table_name(State),[ordered_set,{write_concurrency,false},{read_concurrency,false}]),
     {ok, UState} = BackEnd:init(zraft_util:peer_id(Raft)),
     truncate_log(Raft,#snapshot_info{}),
-    State#state{ustate = UState};
+    State#state{ustate = UState,sessions = Sessions};
 install_snapshot(State = #state{raft = Raft,ustate = Ustate, back_end = BackEnd, dir = Dir, last = Last}) ->
     SnapshotDir = filename:join(Dir, "snapshot-" ++ integer_to_list(Last)),
     DataDir = filename:join(SnapshotDir, "data"),
+    SessionsFile = filename:join(SnapshotDir, "sessions"),
     {ok, Ustate1} = BackEnd:install_snapshot(DataDir, Ustate),
     {ok, SnaphotInfo} = read_last_snapshot_info(SnapshotDir),
     #snapshot_info{index = Index} = SnaphotInfo,
     truncate_log(Raft,SnaphotInfo),
-    State#state{ustate = Ustate1, last_index = Index, log_count = 0, last_dir = SnapshotDir,last_snapshot_index = Index}.
+    Sessions = case ets:file2tab(SessionsFile) of
+                   {ok,Tab}->
+                       %%expire_sessions(Tab),
+                       Tab;
+                   Error->
+                       ?ERROR(
+                           State,
+                           "Can't load sessions from snapshot ~p. Continue with empty sessions. Reason is ~p",
+                           [SessionsFile,Error]
+                       ),
+                       ets:new(session_table_name(State),[ordered_set,{write_concurrency,false},{read_concurrency,false}])
+    end,
+    State#state{
+        ustate = Ustate1,
+        last_index = Index,
+        log_count = 0,
+        last_dir = SnapshotDir,
+        last_snapshot_index = Index,
+        sessions = Sessions
+    }.
+
+session_table_name(#state{raft = Raft})->
+    {{Name,_},_}=Raft,
+    list_to_atom(atom_to_list(Name)++"_sessions").
 
 truncate_log(State=#state{raft = Raft,last_dir = SnapshotDir})->
     case read_last_snapshot_info(SnapshotDir) of
@@ -478,6 +522,25 @@ truncate_log(Raft,SnapshotInfo)->
 
 print_id(#state{raft = Raft})->
     zraft_util:peer_id(Raft).
+
+expire_sessions(Sessions)->
+    Now = zraft_util:now_millisec()+1,
+    Match = [{{{session,'$1'},'$2','$3'},[{'<','$3',{const,Now}}],['$1','$2']}],
+    case ets:select(Sessions,Match) of
+        []->
+            ok;
+        Expire->
+            ets:delete(Sessions,{})
+    end.
+
+expire_session(MRef,Sessions)->
+    L = ets:match(Sessions,{{MRef,'$1'},'$2','_'}).
+
+reply_caller(undefined,_)->
+    ok;
+reply_caller(From,Msg)->
+    gen_fsm:reply(From,Msg).
+
 
 -ifdef(TEST).
 
@@ -517,7 +580,7 @@ read_write() ->
         after 2000->
             ?assert(false)
         end,
-        apply_commit(P, [#enrty{index = 1, data = {1, "1"}, term = 1, type = ?OP_DATA}]),
+        apply_commit(P, [#enrty{index = 1, data = #write{data = {1, "1"}}, term = 1, type = ?OP_DATA}]),
         Stat = sys:get_state(P),
         ?assertMatch(#state{last_index = 1,last_snapshot_index = 0,log_count = 1},Stat),
         Ref = make_ref(),
@@ -566,7 +629,7 @@ snapshot() ->
         after 1000 ->
             ?assert(false)
         end,
-        apply_commit(P, [#enrty{index = I, data = {I, integer_to_list(I)}, term = 1, type = ?OP_DATA} || I <- lists:seq(1, 10)]),
+        apply_commit(P, [#enrty{index = I, data = #write{data = {I, integer_to_list(I)}}, term = 1, type = ?OP_DATA} || I <- lists:seq(1, 10)]),
         receive
             {'$gen_event',{make_snapshot_info,{ReqRef1,From},Index}}->
                 ?assertEqual(10,Index),

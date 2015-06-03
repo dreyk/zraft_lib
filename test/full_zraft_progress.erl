@@ -203,16 +203,22 @@ progress() ->
         ok = zraft_consensus:stop(Peer33)
     end}.
 
+down_attempt(Attempt,Max) when Attempt<Max->
+    ok;
+down_attempt(_Attempt,_Max)->
+    exit({error,to_many_attempts}).
 wait_leadership(Peer,Commit, Attempt) ->
+    down_attempt(Attempt,20),
     case zraft_consensus:stat(Peer) of
         #peer_start{state_name = leader,log_state = #log_descr{commit_index = Commit}} ->
             ok;
         #peer_start{} ->
-            ?debugFmt("Wait leader attempt - ~p",[Attempt]),
+            ?debugFmt("Wait leadership attempt - ~p",[Attempt]),
             wait_leadership(Peer,Commit, Attempt + 1)
     end.
 wait_leader(Peer, Attempt) ->
     timer:sleep(500),
+    down_attempt(Attempt,20),
     case zraft_consensus:stat(Peer) of
         #peer_start{state_name = leader, leader = L, term = T} ->
             {L, T};
@@ -224,6 +230,7 @@ wait_leader(Peer, Attempt) ->
     end.
 
 wait_new_config(Index, PeerID, Attempt) ->
+    down_attempt(Attempt,30),
     case zraft_consensus:get_conf(PeerID, ?TIMEOUT) of
         {ok, {Index, _}} ->
             ok;
@@ -233,6 +240,7 @@ wait_new_config(Index, PeerID, Attempt) ->
     end.
 
 wait_success_read(Key, PeerID, Attempt) ->
+    down_attempt(Attempt,20),
     case zraft_consensus:query(PeerID, Key, ?TIMEOUT) of
         {ok, _} ->
             ok;
@@ -242,6 +250,7 @@ wait_success_read(Key, PeerID, Attempt) ->
     end.
 
 wait_follower_sync(CommitIndex, LastIndex, Term, PeerID, Peer, Attempt) ->
+    down_attempt(Attempt,30),
     case zraft_consensus:stat(Peer) of
         #peer_start{term = Term, state_name = follower, log_state = #log_descr{last_index = LastIndex, commit_index = CommitIndex}} ->
             ?debugFmt("Wait start ~p current state[term:~p,last-index:~p,commit:~p,state:~p] attempt - ~p",
@@ -258,6 +267,7 @@ wait_follower_sync(CommitIndex, LastIndex, Term, PeerID, Peer, Attempt) ->
     end.
 
 wait_snapshot_done(CommitIndex, Peer, Attempt) ->
+    down_attempt(Attempt,30),
     case zraft_consensus:stat(Peer) of
         #peer_start{snapshot_info = #snapshot_info{index = CommitIndex}} ->
             ok;
