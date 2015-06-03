@@ -10,7 +10,10 @@ Supported features:
 - Optimistic log replication.
 - Snapshot transfer via kernel sendfile command.
 
-TODO: 
+## Peer processes and message passing schema.
+[![schema](docs/img/schema.png?raw=true)]
+
+## TODO:
 - Write External API documentation.
 - Add backend based on ets table
 - Add "watcher" support (notify client about backend state changes).
