@@ -229,7 +229,7 @@
 ]}.
 
 %% @doc Whether to enable backup snapshot.
-{mapping, "zraft.snapshot-backup", "zraft_lib.snapshot-backup", [
+{mapping, "zraft.snapshot-backup", "zraft_lib.snapshot_backup", [
   {default, off},
   {datatype, flag}
 ]}.
@@ -243,4 +243,34 @@
 {mapping, "zraft.snapshot-listen-port", "zraft_lib.snapshot_listener_port", [
   {default,0},
   {datatype,integer}
+]}.
+
+%% @doc Platform-specific installation paths (substituted by rebar)
+{mapping, "platform_bin_dir", "zraft_lib.platform_bin_dir", [
+  {datatype, directory},
+  {default, "./bin"}
+]}.
+
+%% @see platform_bin_dir
+{mapping, "platform_data_dir", "zraft_lib.platform_data_dir", [
+  {datatype, directory},
+  {default, "./data"}
+]}.
+
+%% @see platform_bin_dir
+{mapping, "platform_etc_dir", "zraft_lib.platform_etc_dir", [
+  {datatype, directory},
+  {default, "./etc"}
+]}.
+
+%% @see platform_bin_dir
+{mapping, "platform_lib_dir", "zraft_lib.platform_lib_dir", [
+  {datatype, directory},
+  {default, "./lib"}
+]}.
+
+%% @see platform_bin_dir
+{mapping, "platform_log_dir", "zraft_lib.platform_log_dir", [
+  {datatype, directory},
+  {default, "./log"}
 ]}.
