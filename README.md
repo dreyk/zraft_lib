@@ -49,11 +49,11 @@ Example app configuration file.
  ```
 - "snapshot_listener_port" - Default port used for transfer snapshot.(0 - any free port).
 - "snapshot_listener_addr" - Bind Address for accept snapshot transfer connections.
-- "snapshot_backup" - If it's open on all snapshot will be archived.
+- "snapshot_backup" - If it's turn on all snapshot will be archived.
 - "log_dir" - Directory to store RAFT logs and metadata.
 - "snapshot_dir" - Directory to store snapshots.
-- "max_segment_size" - Maximum size in bytes open log file.(New file will be opened.)
-- "max_log_count" - Snapshot/Log truncation process will be started after every "max_log_count" applied entries.
+- "max_segment_size" - Maximum size in bytes opened log file.(New file will be opened.)
+- "max_log_count" - Snapshot/LogTruncation process will be started after every "max_log_count" applied entries.
 
 ## Cient API.
 
@@ -72,9 +72,9 @@ Write request:
 
 ```
 
-query(Raft,Data,Timeout)->{ok,Result,NewRaftConf}|{error,timeout} when
+write(Raft,Data,Timeout)->{ok,Result,Result,NewRaftConf}|{error,timeout} when
     Raft::light_session()|zraft_consensus:peer_id(),
-    Query::term(),
+    Data::term(),
     Timeout::timeout(),
     Result::term(),
     NewRaftConf::light_session()|zraft_consensus:peer_id()
