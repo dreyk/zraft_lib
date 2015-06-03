@@ -18,6 +18,8 @@ Example app configuration file.
 ```
 [{zraft_lib,
      [{snapshot_listener_port,0},
+      {election_timeout,500},
+      {request_timeout,1000},
       {snapshot_listener_addr,"0,0,0,0"},
       {snapshot_backup,false},
       {log_dir,"./data"},
@@ -47,6 +49,8 @@ Example app configuration file.
       {crash_log_count,5}]},
  {sasl,[{sasl_error_logger,false}]}].
  ```
+- "election_timeout" - Timeout(in ms) used by Follower to start new election process (default 500).
+- "request_timeout" - Timeout(in ms) used by Leader to wait replicate RPC reply from Follower (default 2*election_timeout).
 - "snapshot_listener_port" - Default port used for transfer snapshot.(0 - any free port).
 - "snapshot_listener_addr" - Bind Address for accept snapshot transfer connections.
 - "snapshot_backup" - If it's turn on all snapshot will be archived.
