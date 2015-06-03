@@ -11,7 +11,7 @@ Supported features:
 - Snapshot transfer via kernel sendfile command.
 
 ## Peer processes and message passing schema.
-[![schema](docs/img/schema.png?raw=true)]
+![schema](docs/img/schema.png?raw=true)
 
 ## TODO:
 - Write External API documentation.
