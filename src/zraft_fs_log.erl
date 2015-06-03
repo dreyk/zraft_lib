@@ -276,7 +276,7 @@ append_entry(PrevIndex, PrevTerm, ToCommitIndex, Entries0, State) ->
             Segments = [OpenSegment | ClosedSegment],
             %% Remove truncated entry.
             %% Quourum agree that is't already commited.
-            Entries = [E || E <- Entries0, E#enrty.index >= FirstIndex],
+            Entries = [E || E <- Entries0, E#entry.index >= FirstIndex],
             {TruncIndex, NewLastIndex, NewEntries} =
                 maybe_trunc(Commited, Entries, Segments, LastIndex),
             is_safe_trunctate(Commited, TruncIndex),
@@ -301,8 +301,8 @@ append_entry(PrevIndex, PrevTerm, ToCommitIndex, Entries0, State) ->
 maybe_trunc(_CommitIndex, [], _Segments, LastIndex) ->
     {LastIndex + 1, LastIndex, []};
 maybe_trunc(CommitIndex, [FirstToAdd | _] = Entries, Segments, _Lastindex) ->
-    #enrty{index = LastAddIndex} = lists:last(Entries),
-    LogEnries = split_at_index(CommitIndex, FirstToAdd#enrty.index, LastAddIndex, Segments, []),
+    #entry{index = LastAddIndex} = lists:last(Entries),
+    LogEnries = split_at_index(CommitIndex, FirstToAdd#entry.index, LastAddIndex, Segments, []),
     case preappend(CommitIndex, Entries, LogEnries) of
         false ->
             {LastAddIndex + 1, LastAddIndex, []};
@@ -321,17 +321,17 @@ split_at_index(Commited, Min, Max,
 split_at_index(_Commited, _Min, _Max, _Segments, P1) ->
     P1.
 
-split_entry_at_index(Commited, Min, Max, [#enrty{index = I2} | T], P1) when I2 > Max ->
+split_entry_at_index(Commited, Min, Max, [#entry{index = I2} | T], P1) when I2 > Max ->
     true = is_safe_trunctate(Commited, I2),
     split_entry_at_index(Commited, Min, Max, T, P1);
-split_entry_at_index(Commited, Min, Max, [#enrty{index = I2} = E | T], P1) when I2 >= Min ->
+split_entry_at_index(Commited, Min, Max, [#entry{index = I2} = E | T], P1) when I2 >= Min ->
     split_entry_at_index(Commited, Min, Max, T, [E | P1]);
 split_entry_at_index(_Commited, _Min, _Max, _Log, P1) ->
     P1.
 
-preappend(Commited, [#enrty{index = I1, term = T1} | Tail1], [#enrty{index = I1, term = T1} | Tail2]) ->
+preappend(Commited, [#entry{index = I1, term = T1} | Tail1], [#entry{index = I1, term = T1} | Tail2]) ->
     preappend(Commited, Tail1, Tail2);
-preappend(Commited, [#enrty{index = I1} | _] = Entries, _LogTail) ->
+preappend(Commited, [#entry{index = I1} | _] = Entries, _LogTail) ->
     is_safe_trunctate(Commited, I1),
     {I1, Entries};
 preappend(_Commited, [], []) ->
@@ -438,7 +438,7 @@ set_segment_first_index(Index, #segment{entries = Log} = S) ->
     Log1 = truncate_log_before(Index - 1, Log),
     S#segment{entries = Log1, firt_index = Index}.
 
-truncate_log_before(C, [#enrty{index = I} = E | T]) when I > C ->
+truncate_log_before(C, [#entry{index = I} = E | T]) when I > C ->
     [E | truncate_log_before(C, T)];
 truncate_log_before(_, _) ->
     [].
@@ -483,7 +483,7 @@ close_segment(#segment{firt_index = First, last_index = Last} = S, FS) ->
             end
     end.
 
-truncate_log_after(Index, [#enrty{index = I2} | T]) when I2 > Index ->
+truncate_log_after(Index, [#entry{index = I2} | T]) when I2 > Index ->
     truncate_log_after(Index, T);
 truncate_log_after(_Index, Log) ->
     Log.
@@ -524,7 +524,7 @@ append(Entries,
 append_entries(_Index, [], Open = #segment{fd = FD}, FS, Acc, LogAcc, ConfAcc) ->
     ok = file:datasync(FD),
     LastConf = last_conf(FS#fs.snapshot_info, ConfAcc),
-    [#enrty{index = LastIndex, term = LastTerm} | _] = LogAcc,
+    [#entry{index = LastIndex, term = LastTerm} | _] = LogAcc,
     FS#fs{
         last_index = LastIndex,
         last_term = LastTerm,
@@ -532,7 +532,7 @@ append_entries(_Index, [], Open = #segment{fd = FD}, FS, Acc, LogAcc, ConfAcc) -
         closed_segments = Acc,
         configs = ConfAcc,
         last_conf = LastConf};
-append_entries(Index, [#enrty{index = Index0, data = Data, type = Type, term = Term} = E | T],
+append_entries(Index, [#entry{index = Index0, data = Data, type = Type, term = Term} = E | T],
     Open = #segment{size = Size}, FS = #fs{max_segment_size = MaxSize}, Acc, LogAcc, ConfAcc) ->
     if
         Index0 == undefined orelse Index0 == Index ->
@@ -580,7 +580,7 @@ load_segments_data(Index, [], FS, SegmentAcc, ConfAcc) ->
                                 [] ->
                                     {Index - 1, 0};
                                 [#segment{entries = Log} | _] ->
-                                    [#enrty{index = LI, term = LT} | _] = Log,
+                                    [#entry{index = LI, term = LT} | _] = Log,
                                     {LI, LT}
                             end,
     LastConf = last_conf(FS#fs.snapshot_info, ConfAcc),
@@ -722,7 +722,7 @@ read_entries(PIndex, Lo, Hi, FName, FD, Acc, Conf) ->
             {error, {PIndex - 1, Acc, Conf}}
     end.
 
-maybe_add_conf(#enrty{type = ?OP_CONFIG, index = I, data = Data}, Acc) ->
+maybe_add_conf(#entry{type = ?OP_CONFIG, index = I, data = Data}, Acc) ->
     [{I, Data} | Acc];
 maybe_add_conf(_, Acc) ->
     Acc.
@@ -741,14 +741,14 @@ read_entry(PIndex, Lo, Hi, Crs, Size, FD) ->
                                 {'EXIT', Error} ->
                                     {error, Error};
                                 Data ->
-                                    {stop, #enrty{index = Index, type = Type, data = Data, term = Term}}
+                                    {stop, #entry{index = Index, type = Type, data = Data, term = Term}}
                             end;
                         <<Index:64, Term:64, Type:8, BData/binary>> when Index == PIndex ->
                             case catch binary_to_term(BData) of
                                 {'EXIT', Error} ->
                                     {error, Error};
                                 Data ->
-                                    {next, #enrty{index = Index, type = Type, data = Data, term = Term}}
+                                    {next, #entry{index = Index, type = Type, data = Data, term = Term}}
                             end;
                         <<_Index:64, _/binary>> ->
                             {error, index_sequence_error};
@@ -826,9 +826,9 @@ entries1(Lo, Hi, [#segment{entries = Log} | T], Acc) ->
 
 entries2(_Lo, _Hi, [], Acc) ->
     Acc;
-entries2(Lo, Hi, [#enrty{index = I} | T], Acc) when I > Hi ->
+entries2(Lo, Hi, [#entry{index = I} | T], Acc) when I > Hi ->
     entries2(Lo, Hi, T, Acc);
-entries2(Lo, _Hi, [#enrty{index = I} | _T], Acc) when I < Lo ->
+entries2(Lo, _Hi, [#entry{index = I} | _T], Acc) when I < Lo ->
     Acc;
 entries2(Lo, Hi, [E | T], Acc) ->
     entries2(Lo, Hi, T, [E | Acc]).
@@ -842,7 +842,7 @@ term_at(Index, #fs{last_index = Hi, first_index = Lo}) when Index < Lo orelse In
     0;
 term_at(Index, State) ->
     case entries(Index, Index, State) of
-        [#enrty{term = Term}] ->
+        [#entry{term = Term}] ->
             Term;
         _ ->
             0
@@ -927,9 +927,9 @@ handle_replicate_log(ToPeer, NextIndex, PrevTerm, Req = #append_entries{entries 
 handle_replicate_log(ToPeer, NextIndex, PrevTerm, Req, State) ->
     Entries = entries(NextIndex, State#fs.last_index, State),
     case Entries of
-        [#enrty{index = NextIndex} | _] ->
+        [#entry{index = NextIndex} | _] ->
             ok;
-        [#enrty{index = NextIndex1} | _] ->
+        [#entry{index = NextIndex1} | _] ->
             exit({error, {NextIndex1, '=/=', NextIndex}});
         _ ->
             ok
@@ -998,13 +998,13 @@ stop_log(_) ->
     ok.
 
 -define(INITIAL_ENTRY, [
-    #enrty{index = 1, term = 1, data = <<"a">>, type = ?OP_CONFIG},
-    #enrty{index = 2, term = 1, data = <<"b">>, type = ?OP_CONFIG},
-    #enrty{index = 3, term = 1, data = <<"c">>, type = ?OP_CONFIG},
-    #enrty{index = 4, term = 2, data = <<"d">>, type = ?OP_CONFIG},
-    #enrty{index = 5, term = 2, data = <<"e">>, type = ?OP_CONFIG},
-    #enrty{index = 6, term = 2, data = <<"f">>, type = ?OP_CONFIG},
-    #enrty{index = 7, term = 8, data = <<"g">>, type = ?OP_CONFIG}
+    #entry{index = 1, term = 1, data = <<"a">>, type = ?OP_CONFIG},
+    #entry{index = 2, term = 1, data = <<"b">>, type = ?OP_CONFIG},
+    #entry{index = 3, term = 1, data = <<"c">>, type = ?OP_CONFIG},
+    #entry{index = 4, term = 2, data = <<"d">>, type = ?OP_CONFIG},
+    #entry{index = 5, term = 2, data = <<"e">>, type = ?OP_CONFIG},
+    #entry{index = 6, term = 2, data = <<"f">>, type = ?OP_CONFIG},
+    #entry{index = 7, term = 8, data = <<"g">>, type = ?OP_CONFIG}
 ]).
 
 
@@ -1044,7 +1044,7 @@ new_append() ->
         File1 = test_log_file_name("1-3.rlog"),
         File2 = test_log_file_name("4-6.rlog"),
         Configs = lists:reverse(
-            [{I, D} || #enrty{type = Type, index = I, data = D} <- ?INITIAL_ENTRY, Type == ?OP_CONFIG]
+            [{I, D} || #entry{type = Type, index = I, data = D} <- ?INITIAL_ENTRY, Type == ?OP_CONFIG]
         ),
         ?assertMatch(
             #fs{
@@ -1094,14 +1094,14 @@ append_truncate1() ->
         Log = load_fs({test, node()}),
         {ok, _, Log1} = handle_command({append, 0, 0, 0, ?INITIAL_ENTRY}, Log),
         {ok, OpRes, Log2} = handle_command(
-            {append, 7, 8, 0, [#enrty{index = 5, term = 3, data = <<"e">>, type = ?OP_CONFIG}]},
+            {append, 7, 8, 0, [#entry{index = 5, term = 3, data = <<"e">>, type = ?OP_CONFIG}]},
             Log1
         ),
         check_op_result(1, 5, 3, 0, {5, <<"e">>}, OpRes),
         File1 = test_log_file_name("1-3.rlog"),
         File2 = test_log_file_name("4-4.rlog"),
         Configs = lists:reverse(
-            [{I, D} || #enrty{type = Type, index = I, data = D} <- ?INITIAL_ENTRY, Type == ?OP_CONFIG, I < 5] ++
+            [{I, D} || #entry{type = Type, index = I, data = D} <- ?INITIAL_ENTRY, Type == ?OP_CONFIG, I < 5] ++
             [{5, <<"e">>}]
         ),
         ?assertMatch(
@@ -1121,7 +1121,7 @@ append_truncate1() ->
             Log2
         ),
         LogEntriesTest = [E || E <- ?INITIAL_ENTRY,
-            E#enrty.index < 5] ++ [#enrty{index = 5, term = 3, data = <<"e">>, type = ?OP_CONFIG}],
+            E#entry.index < 5] ++ [#entry{index = 5, term = 3, data = <<"e">>, type = ?OP_CONFIG}],
         Entries1 = entries(1, 7, Log2),
         Log3 = load_fs({test, node()}),
         ?assertEqual(LogEntriesTest, Entries1),
@@ -1154,7 +1154,7 @@ append_truncate2() ->
         Log = load_fs({test, node()}),
         {ok, _, Log1} = handle_command({append, 0, 0, 0, ?INITIAL_ENTRY}, Log),
         {ok, OpRes, Log2} = handle_command(
-            {append, 7, 8, 0, [#enrty{index = 7, term = 3, data = <<"e">>, type = ?OP_CONFIG}]},
+            {append, 7, 8, 0, [#entry{index = 7, term = 3, data = <<"e">>, type = ?OP_CONFIG}]},
             Log1
         ),
         check_op_result(1, 7, 3, 0, {7, <<"e">>}, OpRes),
@@ -1175,8 +1175,8 @@ append_truncate2() ->
             },
             Log2
         ),
-        LogEntriesTest = [E || E <- ?INITIAL_ENTRY, E#enrty.index < 7] ++
-            [#enrty{index = 7, term = 3, data = <<"e">>, type = ?OP_CONFIG}],
+        LogEntriesTest = [E || E <- ?INITIAL_ENTRY, E#entry.index < 7] ++
+            [#entry{index = 7, term = 3, data = <<"e">>, type = ?OP_CONFIG}],
         Entries1 = entries(1, 7, Log2),
         ?assertEqual(LogEntriesTest, Entries1),
         ok = zraft_util:del_dir(?DATA_DIR)
@@ -1188,7 +1188,7 @@ snaphost_on_commit() ->
         Log = load_fs({test, node()}),
         {ok, _, Log1} = handle_command({append, 0, 0, 0, ?INITIAL_ENTRY}, Log),
         {ok, _, Log2} = handle_command(
-            {append, 7, 8, 0, [#enrty{index = 7, term = 3, data = <<"e">>, type = ?OP_CONFIG}]},
+            {append, 7, 8, 0, [#entry{index = 7, term = 3, data = <<"e">>, type = ?OP_CONFIG}]},
             Log1
         ),
         File1 = test_log_file_name("6-6.rlog"),
@@ -1229,7 +1229,7 @@ snaphost_on_commit() ->
             E
             ||
             E <- ?INITIAL_ENTRY,
-            E#enrty.index == 6] ++ [#enrty{index = 7, term = 3, data = <<"e">>, type = ?OP_CONFIG}],
+            E#entry.index == 6] ++ [#entry{index = 7, term = 3, data = <<"e">>, type = ?OP_CONFIG}],
         Entries1 = entries(1, 7, Log4),
         ?assertEqual(LogEntriesTest, Entries1),
         ok = zraft_util:del_dir(?DATA_DIR)
@@ -1303,7 +1303,7 @@ corrupted_log_file() ->
             },
             Log2
         ),
-        LogEntriesTest = [E || E <- ?INITIAL_ENTRY, E#enrty.index < 5],
+        LogEntriesTest = [E || E <- ?INITIAL_ENTRY, E#entry.index < 5],
         Entries2 = entries(0, 10, Log2),
         ?assertEqual(LogEntriesTest, Entries2),
         zraft_util:del_dir(?DATA_DIR)
@@ -1325,10 +1325,10 @@ truncate_conflict() ->
         {ok, _, Log1} = handle_command({append, 0, 0, 0, ?INITIAL_ENTRY}, Log),
         {ok, _, Log2} = handle_command({append, 7, 8, 3, []}, Log1),
         FailEntries = [
-            #enrty{index = 1, term = 1, data = 1, type = ?OP_CONFIG},
-            #enrty{index = 2, term = 2, data = 2, type = ?OP_CONFIG},%%already commited
-            #enrty{index = 3, term = 2, data = 3, type = ?OP_CONFIG},
-            #enrty{index = 4, term = 2, data = 4, type = ?OP_CONFIG}
+            #entry{index = 1, term = 1, data = 1, type = ?OP_CONFIG},
+            #entry{index = 2, term = 2, data = 2, type = ?OP_CONFIG},%%already commited
+            #entry{index = 3, term = 2, data = 3, type = ?OP_CONFIG},
+            #entry{index = 4, term = 2, data = 4, type = ?OP_CONFIG}
         ],
         {_, M} = spawn_monitor(fun() ->
             handle_command({append, 1, 1, 0, FailEntries}, Log2) end),

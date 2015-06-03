@@ -77,7 +77,7 @@
 start_link(Raft, BackEnd) ->
     gen_server:start_link(?MODULE, [Raft, BackEnd], []).
 
--spec apply_commit(pid(), list(#enrty{})) -> ok.
+-spec apply_commit(pid(), list(#entry{})) -> ok.
 apply_commit(P, Entries) ->
     gen_server:cast(P, {append, Entries}).
 
@@ -198,16 +198,16 @@ append([], State) ->
 append(Entries, State) ->
     #state{last_index = LastIndex, back_end = BackEnd, ustate = UState, log_count = Count} = State,
     {UState1,Count1, LastIndex1} = lists:foldl(fun(E, {UStateAcc,CountAcc,IndexAcc}) ->
-        #enrty{index = EI,type = Type} = E,
+        #entry{index = EI,type = Type} = E,
         if
             EI =< LastIndex->
-                ?WARNING(State,"Try applt old entry ~p then last applied~p",[E#enrty.index,LastIndex]),
+                ?WARNING(State,"Try applt old entry ~p then last applied~p",[E#entry.index,LastIndex]),
                 exit({error,old_entry}),
                 {UStateAcc,CountAcc,IndexAcc};
             true->
                 if
                     Type==?OP_DATA->
-                        case E#enrty.data of
+                        case E#entry.data of
                             #write{data = Data,from = From}->
                                 {Result,NewUState}=BackEnd:apply_data(Data,UStateAcc),
                                 reply_caller(From,Result),
@@ -580,7 +580,7 @@ read_write() ->
         after 2000->
             ?assert(false)
         end,
-        apply_commit(P, [#enrty{index = 1, data = #write{data = {1, "1"}}, term = 1, type = ?OP_DATA}]),
+        apply_commit(P, [#entry{index = 1, data = #write{data = {1, "1"}}, term = 1, type = ?OP_DATA}]),
         Stat = sys:get_state(P),
         ?assertMatch(#state{last_index = 1,last_snapshot_index = 0,log_count = 1},Stat),
         Ref = make_ref(),
@@ -629,7 +629,7 @@ snapshot() ->
         after 1000 ->
             ?assert(false)
         end,
-        apply_commit(P, [#enrty{index = I, data = #write{data = {I, integer_to_list(I)}}, term = 1, type = ?OP_DATA} || I <- lists:seq(1, 10)]),
+        apply_commit(P, [#entry{index = I, data = #write{data = {I, integer_to_list(I)}}, term = 1, type = ?OP_DATA} || I <- lists:seq(1, 10)]),
         receive
             {'$gen_event',{make_snapshot_info,{ReqRef1,From},Index}}->
                 ?assertEqual(10,Index),

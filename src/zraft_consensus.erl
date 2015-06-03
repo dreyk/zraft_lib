@@ -336,7 +336,7 @@ bootstrap(From, State = #state{config = ?BLANK_CONF, id = PeerID}) ->
         true ->
             gen_fsm:reply(From, ok),
             NewTerm = 1,
-            Entry = #enrty{index = 1, type = ?OP_CONFIG, term = NewTerm, data = #pconf{old_peers = [PeerID]}},
+            Entry = #entry{index = 1, type = ?OP_CONFIG, term = NewTerm, data = #pconf{old_peers = [PeerID]}},
             State1 = append([Entry], State),
             step_down(blank, NewTerm, State1);
         _ ->
@@ -434,7 +434,7 @@ leader(Req, State = #state{}) ->
 %%Only for test
 leader({append_test, Es}, _From, State = #state{log_state = #log_descr{last_index = Index}}) ->
     {A, _} = lists:foldr(fun(E, {Acc, I}) ->
-        {[E#enrty{index = I} | Acc], I + 1} end, {[], Index + 1}, Es),
+        {[E#entry{index = I} | Acc], I + 1} end, {[], Index + 1}, Es),
     State1 = append(A, State),
     {reply, ok, leader, State1};
 leader(_Event, _From, State) ->
@@ -486,7 +486,7 @@ handle_event(Req=#write{}, leader,
     %%Response will be sended after entry will be ready to commit
     #log_descr{last_index = I} = LogState,
     NextIndex = I + 1,
-    Entry = #enrty{term = Term, index = NextIndex, type = ?OP_DATA, data = Req},
+    Entry = #entry{term = Term, index = NextIndex, type = ?OP_DATA, data = Req},
     State1 = append([Entry], State),
     {next_state, leader, State1};
 handle_event(#write{}, StateName, State) ->
@@ -571,7 +571,7 @@ handle_sync_event(Req = #write{}, From, leader,
     %%Response will be sended after entry will be ready to commit
     #log_descr{last_index = I} = LogState,
     NextIndex = I + 1,
-    Entry = #enrty{term = Term, index = NextIndex, type = ?OP_DATA, data = Req#write{from = From}},
+    Entry = #entry{term = Term, index = NextIndex, type = ?OP_DATA, data = Req#write{from = From}},
     State1 = append([Entry], State),
     {next_state, leader, State1};
 handle_sync_event(#write{}, _From, StateName, State) ->
@@ -698,7 +698,7 @@ maybe_change_config(State = #state{config = Config, log_state = LogState}) ->
                 true when Config#config.state == ?TRANSITIONAL_CONF ->
                     %%apply new configuration
                     NewConf = #pconf{new_peers = [], old_peers = Config#config.new_peers},
-                    Entry = #enrty{
+                    Entry = #entry{
                         index = LogState#log_descr.last_index + 1,
                         type = ?OP_CONFIG,
                         term = State#state.current_term,
@@ -978,7 +978,7 @@ maybe_become_leader(Vote,FallBackStateName, State) ->
             %%force hearbeat from new leader. We don't count new commit index.
             replicate_peer_request(?BECOME_LEADER_CMD, State2, []),
             %%Add noop entry,it's needed for commit progress
-            Noop = #enrty{type = ?OP_NOOP, data = <<>>, term = Term, index = LastIndex + 1},
+            Noop = #entry{type = ?OP_NOOP, data = <<>>, term = Term, index = LastIndex + 1},
             State3 = append([Noop], State2),
             {next_state, leader, State3};
         true ->
@@ -1055,7 +1055,7 @@ change_configuration(Req = #conf_change_requet{peers = Peers}, State) ->
         true ->
             #log_descr{last_index = Index} = LogState,
             NextIndex = Index + 1,
-            NewConfEntry = #enrty{
+            NewConfEntry = #entry{
                 term = Term,
                 index = NextIndex,
                 type = ?OP_CONFIG,
@@ -1385,7 +1385,7 @@ bootstrap() ->
         {next_state, follower, State1} = follower(bootstrap, {self(), make_ref()}, State),
         ?assertEqual(1, State1#state.current_term),
         Entries = zraft_fs_log:get_entries(State1#state.log, 1, 1),
-        ?assertMatch([#enrty{term = 1, index = 1, type = ?OP_CONFIG, data = #pconf{old_peers = [Peer]}}],
+        ?assertMatch([#entry{term = 1, index = 1, type = ?OP_CONFIG, data = #pconf{old_peers = [Peer]}}],
             Entries),
         cancel_timer(State1),
         {next_state,candidate, State2} = follower(timeout, State1),
@@ -1395,7 +1395,7 @@ bootstrap() ->
         ?assertMatch(#log_descr{commit_index = 0, first_index = 1, last_index = 2, last_term = 2},
             State3#state.log_state),
         Entries1 = zraft_fs_log:get_entries(State3#state.log, 2, 2),
-        ?assertMatch([#enrty{term = 2, index = 2, type = ?OP_NOOP}], Entries1)
+        ?assertMatch([#entry{term = 2, index = 2, type = ?OP_NOOP}], Entries1)
     end}.
 
 -endif.
