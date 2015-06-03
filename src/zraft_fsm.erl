@@ -523,18 +523,18 @@ truncate_log(Raft,SnapshotInfo)->
 print_id(#state{raft = Raft})->
     zraft_util:peer_id(Raft).
 
-expire_sessions(Sessions)->
-    Now = zraft_util:now_millisec()+1,
-    Match = [{{{session,'$1'},'$2','$3'},[{'<','$3',{const,Now}}],['$1','$2']}],
-    case ets:select(Sessions,Match) of
-        []->
-            ok;
-        Expire->
-            ets:delete(Sessions,{})
-    end.
-
-expire_session(MRef,Sessions)->
-    L = ets:match(Sessions,{{MRef,'$1'},'$2','_'}).
+%% expire_sessions(Sessions)->
+%%     Now = zraft_util:now_millisec()+1,
+%%     Match = [{{{session,'$1'},'$2','$3'},[{'<','$3',{const,Now}}],['$1','$2']}],
+%%     case ets:select(Sessions,Match) of
+%%         []->
+%%             ok;
+%%         Expire->
+%%             ets:delete(Sessions,{})
+%%     end.
+%%
+%% expire_session(MRef,Sessions)->
+%%     L = ets:match(Sessions,{{MRef,'$1'},'$2','_'}).
 
 reply_caller(undefined,_)->
     ok;

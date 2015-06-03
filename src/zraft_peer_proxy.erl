@@ -47,6 +47,8 @@
     stat/2,
     stop_sync/1]).
 
+-define(REQUEST_TIMEOUT,zraft_util:get_env(request_timeout,zraft_consensus:get_election_timeout()*2)).
+
 -record(snapshot_progress, {snapshot_dir, process, mref, index}).
 -record(state, {
     peer,
@@ -91,7 +93,7 @@ init([Raft,QuorumCounter,PeerID, BackEnd]) ->
         _->
             zraft_peer_route:cmd(PeerID,{peer_up,Raft})
     end,
-    ReqTimeout = zraft_consensus:get_election_timeout()*2,
+    ReqTimeout = ?REQUEST_TIMEOUT,
     {ok, #state{
         raft = Raft,
         quorum_counter = QuorumCounter,

@@ -468,18 +468,17 @@ handle_event(Info = #snapshot_info{}, StateName, State = #state{log = Log}) ->
             ?ERROR(State, "Fail truncate log ~p", [Error]),
             {stop, {error, snapshot_failed}, State}
     end;
-handle_event({sync_peer,{sync_index,AgreeIndex}}, leader, State) ->
+handle_event({sync_peer,{sync_index,ConfID,AgreeIndex}}, leader, State=#state{config = #config{id = ConfID}}) ->
     %%log has replicated by peer proxy
     maybe_commit_quorum(AgreeIndex,State);
-handle_event({sync_peer,{sync_epoch,Epoch}}, leader, State) ->
+handle_event({sync_peer,{sync_epoch,ConfID,Epoch}}, leader, State=#state{config = #config{id = ConfID}}) ->
     %%It's safe now to apply read requests
     State1 = apply_read_requests(Epoch,State),
     {next_state, leader, State1};
-handle_event({sync_peer,{sync_vote,Vote}},candidate, State) ->
+handle_event({sync_peer,{sync_vote,ConfID,Vote}},candidate, State=#state{config = #config{id = ConfID}}) ->
     %%It's safe now to apply read requests
     maybe_become_leader(Vote,candidate,State);
 handle_event({sync_peer,_}, StateName, State) ->
-    %%We already lost leadership
     {next_state, StateName, State};
 handle_event(Req=#write{}, leader,
     State = #state{log_state = LogState, current_term = Term}) ->
@@ -1390,7 +1389,7 @@ bootstrap() ->
             Entries),
         cancel_timer(State1),
         {next_state,candidate, State2} = follower(timeout, State1),
-        {next_state,leader,State3}=handle_event({sync_peer,{sync_vote,true}},candidate, State2),
+        {next_state,leader,State3}=handle_event({sync_peer,{sync_vote,1,true}},candidate, State2),
         ?assertEqual(2, State3#state.current_term),
         ?assertEqual(undefined, State3#state.timer),
         ?assertMatch(#log_descr{commit_index = 0, first_index = 1, last_index = 2, last_term = 2},

@@ -199,6 +199,11 @@
   {datatype, {duration, ms}}
 ]}.
 
+%% @doc Request timeout. Default is double election timeout.
+{mapping, "zraft.election-timeout", "zraft_lib.election-timeout", [
+  {datatype, {duration, ms}}
+]}.
+
 %% @doc Log entry count before snapshot.
 {mapping, "zraft.snapshot-threshold", "zraft_lib.max_log_count", [
   {default,1000},
@@ -235,7 +240,7 @@
 ]}.
 
 %% @doc Port that will be used for snapshot receive. Default 0 - any free port.
-{mapping, "zraft.snapshot-listen-if", "zraft_lib.snapshot_listener_port", [
+{mapping, "zraft.snapshot-listen-port", "zraft_lib.snapshot_listener_port", [
   {default,0},
   {datatype,integer}
 ]}.

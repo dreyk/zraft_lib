@@ -13,6 +13,9 @@ Supported features:
 ## Peer processes and message passing schema.
 ![schema](docs/img/schema.png?raw=true)
 
+##Configuration
+
+
 ## TODO:
 - Write External API documentation.
 - Add backend based on ets table

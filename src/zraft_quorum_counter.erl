@@ -121,33 +121,33 @@ change_conf(ConfID,OldPeer,NewPeers,ConfState,State=#state{old = O1,new = N1})->
     State3 = change_epoch(State2),
     change_last_agree_index(State3).
 
-change_epoch(State=#state{epoch_qourum = E,raft_state = leader})->
+change_epoch(State=#state{epoch_qourum = E,raft_state = leader,conf_id = ConfID})->
     case quorumMin(State,#peer.epoch) of
         E->
             State;
         E1->
-            zraft_consensus:sync_peer(State#state.raft,{sync_epoch,E1}),
+            zraft_consensus:sync_peer(State#state.raft,{sync_epoch,ConfID,E1}),
             State#state{epoch_qourum = E1}
     end;
 change_epoch(State)->
     State.
-change_last_agree_index(State=#state{index_quorum = I,raft_state = leader})->
+change_last_agree_index(State=#state{index_quorum = I,raft_state = leader,conf_id = ConfID})->
     case quorumMin(State,#peer.last_agree_index) of
         I->
             State;
         I1->
-            zraft_consensus:sync_peer(State#state.raft,{sync_index,I1}),
+            zraft_consensus:sync_peer(State#state.raft,{sync_index,ConfID,I1}),
             State#state{index_quorum = I1}
     end;
 change_last_agree_index(State)->
     State.
 
-change_vote(State=#state{vote_quorum = V,raft_state = candidate})->
+change_vote(State=#state{vote_quorum = V,raft_state = candidate,conf_id = ConfID})->
     case quorumAll(State,#peer.has_vote) of
         V->
             State;
         V1->
-            zraft_consensus:sync_peer(State#state.raft,{sync_vote,V1}),
+            zraft_consensus:sync_peer(State#state.raft,{sync_vote,ConfID,V1}),
             State#state{vote_quorum = V1}
     end;
 change_vote(State)->
