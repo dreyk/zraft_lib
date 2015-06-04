@@ -188,7 +188,9 @@ set_new_conf(PeerID, NewPeers, OldPeers, Timeout) ->
                     end;
                 _ ->
                     {error, peers_changed}
-            end
+            end;
+        Else->
+            Else
     end.
 %%%===================================================================
 %%% Create new quorum
@@ -275,9 +277,9 @@ peer_execute(PeerID, Fun, Start, Timeout) ->
         {leader, NewLeader} ->
             case zraft_util:is_expired(Start, Timeout) of
                 true ->
-                    {error, tiemout};
-                {false,Timeout1} ->
-                    peer_execute(NewLeader, Fun, os:timestamp(), Timeout1)
+                    {error, timeout};
+                {false,_Timeout1} ->
+                    peer_execute(NewLeader, Fun, os:timestamp(), Timeout)
             end;
         Else ->
             format_error(Else)
@@ -286,9 +288,9 @@ peer_execute_sessions(Session = #light_session{}, Fun, Start, Timeout) ->
     Leader = current_session_leader(Session),
     Next = case catch Fun(Leader) of
         {ok, Result} ->
-            {ok, Result, Session#light_session{leader = Leader}};
+            {Result, Session#light_session{leader = Leader}};
         {leader, NewLeader} when NewLeader /= undefined ->
-            {continue,Session#light_session{leader = Leader}};
+            {continue,Session#light_session{leader = NewLeader}};
         _Else ->
             Session1 = next_leader(Session, Leader),
             {continue,Session1}
@@ -298,8 +300,8 @@ peer_execute_sessions(Session = #light_session{}, Fun, Start, Timeout) ->
             case zraft_util:is_expired(Start, Timeout) of
                 true ->
                     {error, timeout};
-                {false,Timeout1} ->
-                    peer_execute_sessions(NextSession, Fun, os:timestamp(), Timeout1)
+                {false,_Timeout1} ->
+                    peer_execute_sessions(NextSession, Fun,Start,Timeout)
             end;
         Else ->
             Else
@@ -307,20 +309,20 @@ peer_execute_sessions(Session = #light_session{}, Fun, Start, Timeout) ->
 
 execute_once(Session, Data, Start, Timeout) ->
     Ref = erlang:make_ref(),
-    SWrite = #swrite{data = Data, expire_at = Timeout, acc_upto = 0, from = {self(), Ref}, message_id = 1},
+    SWrite = #swrite{data = Data, acc_upto = 0, from = {self(), Ref}, message_id = 1},
     execute_once(Session, Ref, 1, SWrite, Start, Timeout).
 
 execute_once(Session, Ref, Seq, SWrite, Start, Timeout) ->
     Leader = current_session_leader(Session),
-    MRef = zraft_concensus:send_swrite(Leader, SWrite,Timeout),
+    MRef = zraft_consensus:send_swrite(Leader, SWrite#swrite{expire_at = Timeout}),
     Next = receive
                {Ref, #swrite_error{sequence = Seq, error = not_leader, leader = NewLeader}} when NewLeader /= undefined ->
-                   {continue, Session#light_session{leader = Leader}};
+                   {continue, Session#light_session{leader = NewLeader}};
                {Ref,#swrite_error{}}->
                    Session1 = next_leader(Session, Leader),
                    {continue, Session1};
                {Ref, #swrite_reply{sequence = Seq, data = Result}} ->
-                   {ok, Result, Session#light_session{leader = Leader}};
+                   {Result, Session#light_session{leader = Leader}};
                {'DOWN', MRef, process, _, _Error} ->
                    Session1 = next_leader(Session, Leader),
                    {continue, Session1}
@@ -333,8 +335,8 @@ execute_once(Session, Ref, Seq, SWrite, Start, Timeout) ->
             case zraft_util:is_expired(Start, Timeout) of
                 true ->
                     {error, timeout};
-                {false,Timeout1} ->
-                    execute_once(NextSession, Ref, Seq, SWrite,os:timestamp(), Timeout1)
+                {false,_Timeout1} ->
+                    execute_once(NextSession, Ref, Seq, SWrite,Start, Timeout)
             end;
         Else ->
             Else
@@ -367,24 +369,25 @@ wait_stable_conf(Peer, Timeout) ->
 
 %% @private
 wait_stable_conf(Peer, Start, Timeout) ->
+    lager:info("wait conf ~p",[Timeout]),
     case zraft_util:is_expired(Start, Timeout) of
         true ->
             {error, timeout};
-        {false,Timeout1} ->
-            case catch zraft_consensus:get_conf(Peer, Timeout1) of
+        {false,_Timeout1} ->
+            case catch zraft_consensus:get_conf(Peer, Timeout) of
                 {leader, undefined} ->
                     timer:sleep(zraft_consensus:get_election_timeout()),
-                    wait_stable_conf(Peer, Start, Timeout1);
+                    wait_stable_conf(Peer, os:timestamp(), Timeout);
                 {leader, NewLeader} ->
-                    wait_stable_conf(NewLeader, Start, Timeout1);
+                    wait_stable_conf(NewLeader, os:timestamp(), Timeout);
                 {ok, {0, _}} ->
                     timer:sleep(zraft_consensus:get_election_timeout()),
-                    wait_stable_conf(Peer, Start, Timeout1);
+                    wait_stable_conf(Peer,os:timestamp(), Timeout);
                 {ok, {Index, Peers}} ->
                     {ok, {Peer, Index, Peers}};
                 retry ->
                     timer:sleep(zraft_consensus:get_election_timeout()),
-                    wait_stable_conf(Peer, Start, Timeout1);
+                    wait_stable_conf(Peer,os:timestamp(), Timeout);
                 Error ->
                     format_error(Error)
             end

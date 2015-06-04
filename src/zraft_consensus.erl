@@ -166,7 +166,7 @@ write(PeerID, Data, Timeout) ->
 -spec send_swrite(peer_id(),session_write())->reference().
 send_swrite(PeerID,SWrite)->
     MRef = erlang:monitor(process,PeerID),
-    gen_fsm:send_event(PeerID,SWrite),
+    gen_fsm:send_all_state_event(PeerID,SWrite),
     MRef.
 
 %% @doc Async write data to user backend
