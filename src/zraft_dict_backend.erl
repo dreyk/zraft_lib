@@ -35,7 +35,7 @@ query(Fn,Dict) when is_function(Fn)->
 query(Key,Dict) ->
     case dict:find(Key,Dict) of
         error->
-            {ok,{ok,not_found}};
+            {ok,not_found};
         V->
             {ok,V}
     end.

@@ -71,7 +71,7 @@ progress() ->
         Peer1 = {test1, {Ref, self()}},
         Peer2 = {test2, {Ref, self()}},
         %%set new config
-        NewConfEntry = #enrty{term = 2, index = 3, type = ?OP_CONFIG, data = #pconf{old_peers = [PeerName],
+        NewConfEntry = #entry{term = 2, index = 3, type = ?OP_CONFIG, data = #pconf{old_peers = [PeerName],
             new_peers = ordsets:from_list([PeerName, Peer1, Peer2])}},
         ok = append_test(Peer, [NewConfEntry]),
         Res2 = zraft_consensus:stat(Peer),
@@ -134,17 +134,17 @@ progress() ->
         %%must receive prev log
         ?assertMatch(
             [
-                #enrty{index = 1, term = 1, type = ?OP_CONFIG, data = #pconf{}},
-                #enrty{index = 2, term = 2, type = ?OP_NOOP},
-                #enrty{index = 3, term = 2, type = ?OP_CONFIG, data = #pconf{}}
+                #entry{index = 1, term = 1, type = ?OP_CONFIG, data = #pconf{}},
+                #entry{index = 2, term = 2, type = ?OP_NOOP},
+                #entry{index = 3, term = 2, type = ?OP_CONFIG, data = #pconf{}}
             ],
             Command1_3#append_entries.entries
         ),
         ?assertMatch(
             [
-                #enrty{index = 1, term = 1, type = ?OP_CONFIG, data = #pconf{}},
-                #enrty{index = 2, term = 2, type = ?OP_NOOP},
-                #enrty{index = 3, term = 2, type = ?OP_CONFIG, data = #pconf{}}
+                #entry{index = 1, term = 1, type = ?OP_CONFIG, data = #pconf{}},
+                #entry{index = 2, term = 2, type = ?OP_NOOP},
+                #entry{index = 3, term = 2, type = ?OP_CONFIG, data = #pconf{}}
             ],
             Command2_3#append_entries.entries
         ),
@@ -170,13 +170,13 @@ progress() ->
         %%check new conf
         ?assertMatch(
             #append_entries{commit_index = 3, term = 2, prev_log_index = 3, prev_log_term = 2,
-                entries = [#enrty{index = 4, type = ?OP_CONFIG, term = 2}]},
+                entries = [#entry{index = 4, type = ?OP_CONFIG, term = 2}]},
             Command1_5
         ),
         Command2_5 = check_progress(Peer2),
         ?assertMatch(
             #append_entries{commit_index = 3, term = 2, prev_log_index = 3, prev_log_term = 2,
-                entries = [#enrty{index = 4, type = ?OP_CONFIG, term = 2}]},
+                entries = [#entry{index = 4, type = ?OP_CONFIG, term = 2}]},
             Command2_5
         ),
         timer:sleep(100),
@@ -324,13 +324,13 @@ progress() ->
         Command1_12 = check_progress(Peer1),
         ?assertMatch(
             #append_entries{commit_index = 4, prev_log_index = 4, prev_log_term = 2, term = 6,
-                entries = [#enrty{index = 5, type = ?OP_NOOP, term = 6}]},
+                entries = [#entry{index = 5, type = ?OP_NOOP, term = 6}]},
             Command1_12
         ),
         Command2_12 = check_progress(Peer2),
         ?assertMatch(
             #append_entries{commit_index = 4, prev_log_index = 4, prev_log_term = 2, term = 6,
-                entries = [#enrty{index = 5, type = ?OP_NOOP, term = 6}]},
+                entries = [#entry{index = 5, type = ?OP_NOOP, term = 6}]},
             Command2_12
         ),
         ok = zraft_consensus:stop(PeerName)
