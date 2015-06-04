@@ -39,7 +39,7 @@
 -callback apply_data(WriteCmd :: write_cmd(), State :: state()) -> {Result :: term(), State :: state()}.
 
 %% Prepare FSM to take snapshot async if it's possible otherwice return function to take snapshot immediatly
--callback snapshot(State :: state())->{sync,snapshot_fun()} | {async,snapshot_fun()}.
+-callback snapshot(State :: state())->{sync, snapshot_fun(), state()} | {async, snapshot_fun(), state()}.
 
 %% Notify that snapshot has done.
 -callback snapshot_done(State :: state())->{ok, NewState :: state()}.
