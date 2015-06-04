@@ -137,7 +137,7 @@ progress() ->
         W1 = zraft_consensus:write(PeerID2, {1, "1"}, ?TIMEOUT),
         ?assertMatch({leader, {test1, _}}, W1),
         W2 = zraft_consensus:write(PeerID1, {1, "1"}, ?TIMEOUT),
-        ?assertMatch(ok, W2),
+        ?assertMatch({ok,ok}, W2),
         ok = wait_success_read(1, PeerID1, 1),
 
         %%drop test2 peer and all it's data
@@ -148,7 +148,7 @@ progress() ->
         %%wait log replicate
         ok = wait_follower_sync(5, 5, 2, PeerID2, Peer22, 1),
         R1 = zraft_consensus:query_local(PeerID2, fun(Dict) -> lists:ukeysort(1, dict:to_list(Dict)) end, ?TIMEOUT),
-        ?assertMatch([{1, "1"}], R1),
+        ?assertMatch({ok,[{1, "1"}]}, R1),
         [zraft_consensus:write(PeerID1, {I, integer_to_list(I)}, ?TIMEOUT) || I <- lists:seq(2, 8)],
         ok = wait_snapshot_done(10, Peer1, 1),
         Res7 = zraft_consensus:stat(Peer1),
@@ -171,7 +171,7 @@ progress() ->
         ok = wait_follower_sync(12, 12, 2, PeerID3, Peer32, 1),
 
         R2 = zraft_consensus:query_local(PeerID3, fun(Dict) -> lists:ukeysort(1, dict:to_list(Dict)) end, ?TIMEOUT),
-        ?assertMatch([{1, "1"}, {2, "2"}, {3, "3"}, {4, "4"}, {5, "5"}, {6, "6"}, {7, "7"}, {8, "8"}], R2),
+        ?assertMatch({ok,[{1, "1"}, {2, "2"}, {3, "3"}, {4, "4"}, {5, "5"}, {6, "6"}, {7, "7"}, {8, "8"}]}, R2),
 
         %%truncate old leader log
         ok = zraft_consensus:stop(Peer22),

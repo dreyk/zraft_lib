@@ -64,6 +64,9 @@
 -record(swrite,{data,message_id,acc_upto,from,expire_at}).%%write in session
 -record(write,{data,from}).%%optimistic write
 
+-record(swrite_reply,{sequence,data}).
+-record(swrite_error,{sequence,leader,error}).
+
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -define(MINFO(S, As), ?debugFmt("[INFO] " ++ S, As)).

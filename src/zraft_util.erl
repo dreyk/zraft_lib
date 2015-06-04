@@ -178,14 +178,14 @@ clear_test_dir(Dir)->
     del_dir(Dir).
 
 is_expired(_Start,infinity)->
-    false;
+    {false,infinity};
 is_expired(Start,Timeout)->
     T1 = Timeout*1000,
     case timer:now_diff(os:timestamp(),Start) of
         T2 when T2 >= T1 ->
             true;
-        _->
-            false
+        T2->
+            {false,(T1-T2) div 1000}
     end.
 
 start_app(App)->

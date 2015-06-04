@@ -149,7 +149,7 @@ handle_cast(Req = #install_snapshot{data = finish}, State) ->
 handle_cast(#leader_read_request{from = From, request = Query}, State = #state{back_end = BackEnd, ustate = UState}) ->
     case BackEnd:query(Query, UState) of
         {ok, Res} ->
-            reply_caller(From, Res);
+            reply_caller(From, {ok,Res});
         {error, Err} ->
             reply_caller(From, {error, Err})
     end,
@@ -216,7 +216,7 @@ append(Entries, State) ->
         #entry{index = EI, type = Type, global_time = Time} = E,
         if
             EI =< LastIndex ->
-                ?WARNING(State, "Try applt old entry ~p then last applied~p", [E#entry.index, LastIndex]),
+                ?WARNING(State, "Try apply old entry ~p then last applied~p", [E#entry.index, LastIndex]),
                 exit({error, old_entry}),
                 {UStateAcc, CountAcc, IndexAcc, TimeAcc};
             true ->
@@ -225,7 +225,7 @@ append(Entries, State) ->
                         case E#entry.data of
                             #write{data = Data, from = From} ->
                                 {Result, NewUState} = BackEnd:apply_data(Data, UStateAcc),
-                                reply_caller(RaftState, From, Result),
+                                reply_caller(RaftState, From, {ok,Result}),
                                 {NewUState, CountAcc + 1, EI, Time};
                             #swrite{} = Write ->
                                 NewUState = sapply(TimeAcc,Write, State),
@@ -250,7 +250,7 @@ sapply(GlobalTime,#swrite{from = From, message_id = Seq, expire_at = ExpireTime,
     {FromPID, Ref} = From,
     #state{sessions = Sessions, ustate = UState, back_end = BackEnd} = State,
     case ets:lookup(Sessions, {reply, FromPID, Ref, Seq}) of
-        [{ReplyID,_,T1}] when T1 =< GlobalTime andalso GlobalTime>0->
+        [{_ReplyID,_,T1}] when T1 =< GlobalTime andalso GlobalTime>0->
             %%we must expire result, other peers may already do it
             {Result1, UState1} = BackEnd:apply_data(Data, UState),
             true = ets:insert(Sessions, {{reply, FromPID, Ref, Seq}, Result1, ExpireTime});
@@ -262,7 +262,7 @@ sapply(GlobalTime,#swrite{from = From, message_id = Seq, expire_at = ExpireTime,
             {Result1, UState1} = BackEnd:apply_data(Data, UState),
             true = ets:insert(Sessions, {{reply, FromPID, Ref, Seq}, Result1, ExpireTime})
     end,
-    reply_caller(State#state.raft_state, From, {Seq,Result1}),
+    reply_caller(State#state.raft_state, From, #swrite_reply{data = Result1,sequence = Seq}),
     acc_session(From, AccUpTo, State),
     UState1.
 
@@ -634,7 +634,7 @@ read_write() ->
         cmd(P, #leader_read_request{from = Me, request = 1}),
         receive
             {Ref, Res} ->
-                ?assertMatch({ok, "1"}, Res);
+                ?assertMatch({ok,{ok, "1"}}, Res);
             Else1 ->
                 ?assertMatch(result, Else1)
         after 1000 ->
@@ -669,7 +669,7 @@ snapshot() ->
         cmd(P, #leader_read_request{from = Me, request = 1}),
         receive
             {Ref, Res} ->
-                ?assertMatch({ok, not_found}, Res);
+                ?assertMatch({ok,not_found}, Res);
             Else1 ->
                 ?assertMatch(result, Else1)
         after 1000 ->
@@ -688,7 +688,7 @@ snapshot() ->
         cmd(P, #leader_read_request{from = Me, request = 1}),
         receive
             {Ref, Res1} ->
-                ?assertMatch({ok, "1"}, Res1);
+                ?assertMatch({ok,{ok, "1"}}, Res1);
             Else3 ->
                 ?assertMatch(result, Else3)
         after 1000 ->
@@ -715,7 +715,7 @@ snapshot() ->
         cmd(P1, #leader_read_request{from = Me, request = 10}),
         receive
             {Ref, Res3} ->
-                ?assertMatch({ok, "10"}, Res3);
+                ?assertMatch({ok,{ok, "10"}}, Res3);
             Else6 ->
                 ?assertMatch(result, Else6)
         after 1000 ->
@@ -755,7 +755,7 @@ sessions(State0) ->
         sapply(0,Req1, State),
         receive
             R1 ->
-                ?assertMatch({_,{1,new_result1}}, R1)
+                ?assertMatch({_,#swrite_reply{sequence = 1,data = new_result1}}, R1)
         end,
         E1 = ets:lookup(Sessions, {reply, self(), Ref1, 1}),
         ?assertMatch([{_, new_result1, 10}], E1),
@@ -767,7 +767,7 @@ sessions(State0) ->
         sapply(0,Req2, State),
         receive
             R2 ->
-                ?assertMatch({_, {1,new_result2}}, R2)
+                ?assertMatch({_, #swrite_reply{sequence = 1,data = new_result2}}, R2)
         end,
         E2 = ets:lookup(Sessions, {reply, self(), Ref2, 1}),
         ?assertMatch([{_, new_result2, 20}], E2),
@@ -775,7 +775,7 @@ sessions(State0) ->
         sapply(0,Req1#swrite{expire_at = 11}, State),
         receive
             R3 ->
-                ?assertMatch({_, {1,new_result1}}, R3)
+                ?assertMatch({_, #swrite_reply{sequence = 1,data = new_result1}}, R3)
         end,
         E3 = ets:lookup(Sessions, {reply, self(), Ref1, 1}),
         ?assertMatch([{_, new_result1, 11}], E3),
@@ -784,7 +784,7 @@ sessions(State0) ->
         sapply(0,Req3, State),
         receive
             R4 ->
-                ?assertMatch({_, {2,new_result2}}, R4)
+                ?assertMatch({_, #swrite_reply{sequence = 2,data = new_result2}}, R4)
         end,
         E4 = ets:lookup(Sessions, {reply, self(), Ref1, 2}),
         ?assertMatch([{_, new_result2, 30}], E4),
@@ -802,14 +802,14 @@ sessions(State0) ->
         sapply(0,Req4, State),
         receive
             R5 ->
-                ?assertMatch({_, {2,new_result2}}, R5)
+                ?assertMatch({_, #swrite_reply{sequence = 2,data = new_result2}}, R5)
         end,
         E8 = ets:lookup(Sessions, {reply, self(), Ref1, 2}),
         ?assertMatch([], E8),
         sapply(0,Req3, State),
         receive
             R6 ->
-                ?assertMatch({_, {2,new_result2}}, R6)
+                ?assertMatch({_, #swrite_reply{sequence = 2,data = new_result2}}, R6)
         end,
         E9 = ets:lookup(Sessions, {reply, self(), Ref1, 2}),
         ?assertMatch([{_, new_result2, 30}], E9),

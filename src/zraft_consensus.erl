@@ -54,7 +54,8 @@
     install_snapshot_request/0,
     install_snapshot_reply/0,
     snapshot_info/0,
-    raft_runtime_error/0
+    raft_runtime_error/0,
+    session_write/0
 ]).
 
 -export([
@@ -76,7 +77,8 @@
     write_async/2,
     truncate_log/2,
     set_new_configuration/4,
-    stat/1
+    stat/1,
+    send_swrite/2
 ]).
 
 
@@ -132,6 +134,7 @@
 -type install_snapshot_reply() :: #install_snapshot_reply{}.
 -type snapshot_info() :: #snapshot_info{}.
 -type raft_runtime_error() :: {error, term()}.
+-type session_write()::#swrite{}.
 
 
 %%%===================================================================
@@ -155,10 +158,16 @@ get_conf(PeerID, Timeout) ->
     send_leader_request(PeerID, get_conf_request, [], Timeout).
 
 %% @doc Write data to user backend
--spec write(peer_id(), term(), timeout()) -> ok|{leader, peer_id()}|{error, timeout}.
+-spec write(peer_id(), term(), timeout()) -> {ok,term()}|{leader, peer_id()}.
 write(PeerID, Data, Timeout) ->
     Req = #write{data = Data},
     gen_fsm:sync_send_all_state_event(PeerID, Req, Timeout).
+
+-spec send_swrite(peer_id(),session_write())->reference().
+send_swrite(PeerID,SWrite)->
+    MRef = erlang:monitor(process,PeerID),
+    gen_fsm:send_event(PeerID,SWrite),
+    MRef.
 
 %% @doc Async write data to user backend
 -spec write_async(peer_id(), term()) -> ok.
@@ -485,8 +494,16 @@ handle_event(Req=#write{}, leader, State) ->
     Entry = new_entry(?OP_DATA,Req,State),
     State1 = append([Entry], State),
     {next_state, leader, State1};
+handle_event(Req=#swrite{expire_at = Timeout}, leader, State) ->
+    DeadLine = zraft_util:now_millisec()+Timeout,
+    Entry = new_entry(?OP_DATA,Req#swrite{expire_at = DeadLine},State),
+    State1 = append([Entry], State),
+    {next_state, leader, State1};
 handle_event(#write{}, StateName, State) ->
     %%Ignore request
+    {next_state, StateName, State};
+handle_event(#swrite{from = From,message_id = Seq}, StateName, State) ->
+    gen_fsm:reply(From,#swrite_error{sequence = Seq,leader = State#state.leader,error = not_leader}),
     {next_state, StateName, State};
 handle_event(_Event, StateName, State) ->
     {next_state, StateName, State}.
