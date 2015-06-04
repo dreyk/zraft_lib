@@ -33,7 +33,7 @@
 -callback init(PeerId :: zraft_consensus:peer_id()) -> state().
 
 %% read/query data from FSM
--callback query(ReadCmd :: read_cmd(), State :: state()) -> {ok, Sata :: term()}.
+-callback query(ReadCmd :: read_cmd(), State :: state()) -> {ok, Data :: term()}.
 
 %% write data to FSM
 -callback apply_data(WriteCmd :: write_cmd(), State :: state()) -> {Result :: term(), State :: state()}.
