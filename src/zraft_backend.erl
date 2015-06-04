@@ -26,7 +26,7 @@
 -type state() :: term().
 -type read_cmd()::term().
 -type write_cmd()::term().
--type snapshot_fun()::fun().
+-type snapshot_fun()::fun((Dest :: file:filename()) -> ok | {error, Reason :: term()}).
 
 
 %% init backend FSM
