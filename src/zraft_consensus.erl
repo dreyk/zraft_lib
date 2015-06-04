@@ -940,7 +940,9 @@ start_election(State) ->
         log = Log,
         back_end = BackEnd,
         log_state = LogState,
-        quorum_counter = Counter}=State,
+        quorum_counter = Counter,
+        state_fsm = StateFSM
+    }=State,
     NextTerm = Term + 1,
     #log_descr{last_index = LastIndex, last_term = LastTerm} = LogState,
     VoteRequest = #vote_request{epoch = Epoch, term = NextTerm, from = peer(PeerID), last_index = LastIndex, last_term = LastTerm},
@@ -952,6 +954,7 @@ start_election(State) ->
         #raft_meta{id = PeerID, voted_for = PeerID, back_end = BackEnd, current_term = NextTerm}
     ),
     #log_descr{last_index = LastIndex, last_term = LastTerm} = LogState,
+    zraft_fsm:set_state(StateFSM,candidate),
     zraft_quorum_counter:set_state(Counter,candidate),
     update_all_peer(
         fun
@@ -969,7 +972,14 @@ maybe_become_leader(Vote,FallBackStateName, State) ->
     if
         Vote ->
             ?INFO(State,"Now is leader in term ~p",[State#state.current_term]),
-            #state{id = MyID, current_term = Term, log_state = LogDescr,quorum_counter = Counter} = State,
+            #state{
+                id = MyID,
+                current_term = Term,
+                log_state = LogDescr,
+                quorum_counter = Counter,
+                state_fsm = StateFSM
+            } = State,
+            zraft_fsm:set_state(StateFSM,leader),
             zraft_quorum_counter:set_state(Counter,leader),
             #log_descr{last_index = LastIndex} = LogDescr,
             State1 = State#state{leader = MyID, voted_for = MyID, last_hearbeat = max},
@@ -1198,6 +1208,7 @@ update_peer(PeerID, Fun, State) ->
     to_peer(PeerID, {?UPDATE_CMD, Fun}, State).
 
 lost_leadership(StateName, State) when StateName == leader orelse StateName == candidate ->
+    zraft_fsm:set_state(State#state.state_fsm,follower),
     zraft_quorum_counter:set_state(State#state.quorum_counter,follower),
     to_all_peer(?LOST_LEADERSHIP_CMD, State);
 lost_leadership(_, _State) ->

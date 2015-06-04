@@ -36,7 +36,8 @@
 -export([
     cmd/2,
     apply_commit/2,
-    stop/1
+    stop/1,
+    set_state/2
 ]).
 
 -include_lib("zraft_lib/include/zraft.hrl").
@@ -58,6 +59,7 @@
 
 -record(state, {
     raft,
+    raft_state=follower,
     sessions,
     ustate,
     back_end,
@@ -76,6 +78,10 @@
 
 start_link(Raft, BackEnd) ->
     gen_server:start_link(?MODULE, [Raft, BackEnd], []).
+
+-spec set_state(pid(),atom())->ok.
+set_state(P,StateName)->
+    gen_server:cast(P,{set_state,StateName}).
 
 -spec apply_commit(pid(), list(#entry{})) -> ok.
 apply_commit(P, Entries) ->
@@ -117,6 +123,8 @@ handle_call(_Request, _From, State) ->
 
 handle_cast(init,State)->
     delayed_init(State);
+handle_cast({set_state,StateName},State)->
+    {noreply,State#state{raft_state = StateName}};
 handle_cast({copy_timeout, From, Index},
     State = #state{active_snapshot = #snapshoter{from = From, last_index = Index}}) ->
     State1 = discard_snapshot({error, hearbeat_fail}, State),
@@ -196,32 +204,131 @@ safe_rename(File, Dest) ->
 append([], State) ->
     {noreply, State};
 append(Entries, State) ->
-    #state{last_index = LastIndex, back_end = BackEnd, ustate = UState, log_count = Count} = State,
-    {UState1,Count1, LastIndex1} = lists:foldl(fun(E, {UStateAcc,CountAcc,IndexAcc}) ->
-        #entry{index = EI,type = Type} = E,
+    #state{
+        raft_state = RaftState,
+        last_index = LastIndex,
+        back_end = BackEnd,
+        ustate = UState,
+        log_count = Count
+    } = State,
+    {UState1,Count1, LastIndex1,GlobalTime1} = lists:foldl(fun(E, {UStateAcc,CountAcc,IndexAcc,TimeAcc}) ->
+        #entry{index = EI,type = Type,global_time = Time} = E,
         if
             EI =< LastIndex->
                 ?WARNING(State,"Try applt old entry ~p then last applied~p",[E#entry.index,LastIndex]),
                 exit({error,old_entry}),
-                {UStateAcc,CountAcc,IndexAcc};
+                {UStateAcc,CountAcc,IndexAcc,TimeAcc};
             true->
                 if
                     Type==?OP_DATA->
                         case E#entry.data of
                             #write{data = Data,from = From}->
                                 {Result,NewUState}=BackEnd:apply_data(Data,UStateAcc),
-                                reply_caller(From,Result),
-                                {NewUState,CountAcc+1,EI};
+                                reply_caller(RaftState,From,Result),
+                                {NewUState,CountAcc+1,EI,Time};
+                            #swrite{}=Write->
+                                NewUState = sapply(Write,State),
+                                {NewUState,CountAcc+1,EI,Time};
                             Else->
                                 ?WARNING(State,"Unknow data value ~p",[Else]),
-                                {UStateAcc,CountAcc+1,EI}
+                                {UStateAcc,CountAcc+1,EI,Time}
                         end;
                     true->
-                        {UStateAcc,CountAcc+1,EI}
+                        {UStateAcc,CountAcc+1,EI,Time}
                 end
-        end end,{UState, Count, LastIndex}, Entries),
+        end end,{UState, Count, LastIndex,0}, Entries),
+    if
+        GlobalTime1>0->
+            expire_sessions(GlobalTime1,State);
+        true->
+            ok
+    end,
     maybe_take_snapshost(Count1, State#state{last_index = LastIndex1, ustate = UState1}).
 
+sapply(#swrite{from = From,message_id = Seq,expire_at = ExpireTime,data = Data,acc_upto = AccUpTo},State)->
+    {FromPID,Ref} = From,
+    #state{sessions = Sessions,ustate = UState,back_end = BackEnd}=State,
+    case ets:lookup(Sessions,{reply,FromPID,Ref,Seq}) of
+        [{ReplyID,Result,_}]->
+            Result1 = Result,
+            UState1 = UState,
+            ISNew = false,
+            ets:update_element(Sessions,ReplyID,{3,ExpireTime});
+        []->
+            ISNew = true,
+            {Result1,UState1}=BackEnd:apply_data(Data,UState),
+            true = ets:insert(Sessions,{{reply,FromPID,Ref,Seq},Result1,ExpireTime})
+    end,
+    reply_caller(State#state.raft_state,From,Result1),
+    ets:insert(Sessions,{{reply,FromPID,Ref,Seq},Result1,ExpireTime}),
+    case ets:lookup(Sessions,{session,FromPID}) of
+        [{_SessionID,_MRef,PrevExpire,_}] when PrevExpire>ExpireTime->
+            ok;
+        [{SessionID,MRef,_,_}]->
+            ets:update_element(Sessions,SessionID,{3,ExpireTime});
+        []->
+            Mref = erlang:monitor(process,FromPID),
+            true = ets:insert_new(Sessions,{{session,FromPID},Mref,ExpireTime,0})
+    end,
+    if
+        ISNew->
+            ets:update_counter(Sessions,{session,FromPID},{4,1});
+        true->
+            ok
+    end,
+    acc_session(From,AccUpTo,State),
+    UState1.
+
+acc_session(_,0,_)->
+    ok;
+acc_session({FromPID,Ref},UpTo,State=#state{sessions = Sessions})->
+    Match = [{{{reply,FromPID,Ref,'$1'},'_','_'},[{'=<','$1',{const,UpTo}}],[true]}],
+    Count = ets:select_delete(Sessions,Match),
+    Val = ets:update_counter(Sessions,{session,FromPID},{4,-Count}),
+    if
+        Val<0->
+            ?ERROR(State,"Session counter is negative ~p",[Val]),
+            exit({error,session_counter_ivalid});
+        Val==0->
+            [{_,MRef,_,_}] = ets:lookup(Sessions,{session,FromPID}),
+            erlang:demonitor(MRef,[flush]),
+            ets:delete(Sessions,{session,FromPID});
+        true->
+            ok
+    end.
+
+expire_sessions(GlobalTime,State = #state{sessions = Sessions})->
+    Match = [{{{session,'$1'},'$2','$3','$4'},[{'=<','$3',{const,GlobalTime}}],['$1','$2','$4']}],
+    S = ets:select(Sessions,Match),
+    lists:foreach(fun([FromPID,MRef,Count])->
+        erlang:demonitor(MRef,[flush]),
+        if
+            Count>0->
+                ets:match_delete(Sessions,{{reply,FromPID,'_','_'},'_','_'});
+            true->
+                ok
+        end,
+        ets:delete(Sessions,{session,FromPID}) end,S),
+    expire_reuqests(GlobalTime,State).
+expire_reuqests(GlobalTime,State=#state{sessions = Sessions})->
+    Match = [{{{reply,'$1','_','_'},'_','$3'},[{'=<','$3',{const,GlobalTime}}],['$1']}],
+    S = ets:select(Sessions,Match),%%in order PID
+    S1 = [{P,1}||[P]<-S],
+    S2 = zraft_util:count_list(S1),
+    ets:select_delete(Sessions,S),
+    lists:foreach(fun({P,C})->
+        Val = ets:update_counter(Sessions,{session,P},{4,-C}),
+        if
+            Val<0->
+                ?ERROR(State,"Session counter is negative ~p",[Val]),
+                exit({error,session_counter_ivalid});
+            Val==0->
+                [{_,MRef,_,_}] = ets:lookup(Sessions,{session,P}),
+                erlang:demonitor(MRef,[flush]),
+                ets:delete(Sessions,{session,P});
+            true->
+                ok
+        end end,S2).
 
 clean_dir(Dir) ->
     {ok, Files} = file:list_dir(Dir),
@@ -536,7 +643,13 @@ print_id(#state{raft = Raft})->
 %% expire_session(MRef,Sessions)->
 %%     L = ets:match(Sessions,{{MRef,'$1'},'$2','_'}).
 
-reply_caller(undefined,_)->
+
+reply_caller(RaftState,From,_) when RaftState /= leader orelse From==undefined->
+    ok;
+reply_caller(leader,From,Msg)->
+    reply_caller(From,Msg).
+
+reply_caller(undeined,_)->
     ok;
 reply_caller(From,Msg)->
     gen_fsm:reply(From,Msg).

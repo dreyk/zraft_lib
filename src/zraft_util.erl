@@ -40,7 +40,8 @@
     is_expired/2,
     random/2,
     now_millisec/0,
-    timestamp_millisec/1
+    timestamp_millisec/1,
+    count_list/1
 ]).
 
 now_millisec()->
@@ -202,3 +203,15 @@ start_app(App,ok) ->
     end;
 start_app(_,Error) ->
     Error.
+
+count_list([])->
+    [];
+count_list([{E1,C1}|T])->
+    count_list(E1,C1,T).
+
+count_list(E1,C1,[{E1,C2}|T])->
+    count_list(E1,C1+C2,T);
+count_list(E1,C1,[{E2,C2}|T])->
+    [{E1,C1}|count_list(E2,C2,T)];
+count_list(E1,C1,[])->
+    [{E1,C1}].
