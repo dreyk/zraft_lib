@@ -30,22 +30,22 @@
 
 
 %% init backend FSM
--callback init(zraft_consensus:peer_id()) -> state().
+-callback init(PeerId :: zraft_consensus:peer_id()) -> state().
 
 %% read/query data from FSM
--callback query(read_cmd(),state()) -> {ok,term()}.
+-callback query(ReadCmd :: read_cmd(), State :: state()) -> {ok, Sata :: term()}.
 
 %% write data to FSM
--callback apply_data(write_cmd(),state()) -> {term(),state()}.
+-callback apply_data(WriteCmd :: write_cmd(), State :: state()) -> {Result :: term(), State :: state()}.
 
-%% Prepare FSM to take snapshot asycn if it's possible otherwice return function to take snapshot immediatly
--callback snapshot(state())->{sync,snapshot_fun()} | {async,snapshot_fun()}.
+%% Prepare FSM to take snapshot async if it's possible otherwice return function to take snapshot immediatly
+-callback snapshot(State :: state())->{sync,snapshot_fun()} | {async,snapshot_fun()}.
 
 %% Notify that snapshot has done.
--callback snapshot_done(state())->{ok,state()}.
+-callback snapshot_done(State :: state())->{ok, NewState :: state()}.
 
 %% Notify that snapshot has failed.
--callback snapshot_failed(Reason::term(),state())->{ok,state()}.
+-callback snapshot_failed(Reason :: term(), State :: state())->{ok,state()}.
 
 %% Read data from snapshot file or directiory.
--callback install_snapshot(file:filename(),state())->{ok,state()}.
+-callback install_snapshot(FileName :: file:filename(), State :: state())->{ok,state()}.
