@@ -48,4 +48,4 @@
 -callback snapshot_failed(Reason :: term(), State :: state())->{ok,state()}.
 
 %% Read data from snapshot file or directiory.
--callback install_snapshot(FileName :: file:filename(), State :: state())->{ok,state()}.
+-callback install_snapshot(FileName :: file:filename(), State :: state())-> {ok,state()} | {error, Reason :: term}.
