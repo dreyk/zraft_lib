@@ -369,7 +369,6 @@ wait_stable_conf(Peer, Timeout) ->
 
 %% @private
 wait_stable_conf(Peer, Start, Timeout) ->
-    lager:info("wait conf ~p",[Timeout]),
     case zraft_util:is_expired(Start, Timeout) of
         true ->
             {error, timeout};
