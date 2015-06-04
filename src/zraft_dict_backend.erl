@@ -49,7 +49,7 @@ apply_data(List,Dict) when is_list(List)->
         dict:store(K,V,Acc) end,Dict,List),
     {ok,Dict1}.
 
-%% @doc Prepare FSM to take snapshot asycn if it's possible otherwice return function to take snapshot immediatly
+%% @doc Prepare FSM to take snapshot async if it's possible otherwice return function to take snapshot immediatly
 snapshot(Dict)->
     Fun = fun(ToDir)->
         File = filename:join(ToDir,"state"),
