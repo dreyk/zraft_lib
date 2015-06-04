@@ -532,7 +532,7 @@ append_entries(_Index, [], Open = #segment{fd = FD}, FS, Acc, LogAcc, ConfAcc) -
         closed_segments = Acc,
         configs = ConfAcc,
         last_conf = LastConf};
-append_entries(Index, [#entry{index = Index0, data = Data, type = Type, term = Term} = E | T],
+append_entries(Index, [#entry{index = Index0, data = Data, type = Type, term = Term,global_time = GTime} = E | T],
     Open = #segment{size = Size}, FS = #fs{max_segment_size = MaxSize}, Acc, LogAcc, ConfAcc) ->
     if
         Index0 == undefined orelse Index0 == Index ->
@@ -540,7 +540,7 @@ append_entries(Index, [#entry{index = Index0, data = Data, type = Type, term = T
         true ->
             exit({error, index_mismach, Index, Index0})
     end,
-    DataBytes = <<Index:64, Term:64, Type:8, (term_to_binary(Data))/binary>>,
+    DataBytes = <<Index:64, Term:64, Type:8,GTime:64,(term_to_binary(Data))/binary>>,
     Crs = erlang:crc32(DataBytes),
     DataSize = size(DataBytes),
     Buffer = <<?RECORD_START:8, Crs:32, DataSize:32, DataBytes/binary>>,
@@ -734,21 +734,25 @@ read_entry(PIndex, Lo, Hi, Crs, Size, FD) ->
             if
                 BufferCrs == Crs ->
                     case Buffer of
-                        <<Index:64, _Term:64, _Type:8, _BData/binary>> when Index < Lo ->
+                        <<Index:64, _Term:64, _Type:8,_GTime:64, _BData/binary>> when Index < Lo ->
                             next;
-                        <<Index:64, Term:64, Type:8, BData/binary>> when Index == Hi andalso Index == PIndex ->
+                        <<Index:64, Term:64, Type:8,GTime:64, BData/binary>> when Index == Hi andalso Index == PIndex ->
                             case catch binary_to_term(BData) of
                                 {'EXIT', Error} ->
                                     {error, Error};
                                 Data ->
-                                    {stop, #entry{index = Index, type = Type, data = Data, term = Term}}
+                                    {
+                                        stop,
+                                        #entry{global_time = GTime,index = Index, type = Type, data = Data, term = Term}
+                                    }
                             end;
-                        <<Index:64, Term:64, Type:8, BData/binary>> when Index == PIndex ->
+                        <<Index:64, Term:64, Type:8,GTime:64, BData/binary>> when Index == PIndex ->
                             case catch binary_to_term(BData) of
                                 {'EXIT', Error} ->
                                     {error, Error};
                                 Data ->
-                                    {next, #entry{index = Index, type = Type, data = Data, term = Term}}
+                                    {next,
+                                        #entry{global_time = GTime,index = Index, type = Type, data = Data, term = Term}}
                             end;
                         <<_Index:64, _/binary>> ->
                             {error, index_sequence_error};
@@ -990,7 +994,7 @@ load_raft_meta(Dir) ->
 -ifdef(TEST).
 setup_log() ->
     zraft_util:set_test_dir("test-log"),
-    application:set_env(zraft_lib, max_segment_size, 100),%%3 entry per log
+    application:set_env(zraft_lib, max_segment_size, 124),%%3 entry per log
     ok.
 stop_log(_) ->
     zraft_util:clear_test_dir("test-log"),
@@ -1031,7 +1035,7 @@ fs_log_test_() ->
 check_max_size() ->
     {"max size", fun() ->
         Max = max_segment_size(),
-        ?assertEqual(100, Max)
+        ?assertEqual(124, Max)
     end}.
 
 new_append() ->

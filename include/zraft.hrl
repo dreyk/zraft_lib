@@ -47,7 +47,7 @@
 
 -record(log_op_result,{log_state,last_conf,result}).
 
--record(entry,{index,term,type,data,global_time}).
+-record(entry,{index,term,type,data,global_time=0}).
 
 -record(pconf,{old_peers=[],new_peers=[]}).
 
