@@ -204,37 +204,44 @@ test_get(Ets) ->
     ].
 
 test_snapshot(Ets = #state{ets_ref = Tab}) ->
-    fun() ->
-        TabData = lists:usort(ets:tab2list(Tab)),
-        Snapshot = snapshot(Ets),
-        ?assertMatch({async, _, Ets}, Snapshot),
-        {_, SnapshotFun, _} = Snapshot,
-        ?assert(is_function(SnapshotFun, 1)),
-        Me = self(),
-        spawn(
-            fun() ->
-                R = SnapshotFun(?TEST_DIR),
-                Me ! {test, R}
-            end),
-        R = receive
-                {test, V}->
-                    V
-            end,
-        ?assertEqual(ok, R),
-        ?assert(filelib:is_file(filename:join(?TEST_DIR, ?STATE_FILENAME))),
+    [
+        fun() ->
+            TabData = lists:usort(ets:tab2list(Tab)),
+            Snapshot = snapshot(Ets),
+            ?assertMatch({async, _, Ets}, Snapshot),
+            {_, SnapshotFun, _} = Snapshot,
+            ?assert(is_function(SnapshotFun, 1)),
+            Me = self(),
+            spawn(
+                fun() ->
+                    R = SnapshotFun(?TEST_DIR),
+                    Me ! {test, R}
+                end),
+            R = receive
+                    {test, V}->
+                        V
+                end,
+            ?assertEqual(ok, R),
+            ?assert(filelib:is_file(filename:join(?TEST_DIR, ?STATE_FILENAME))),
 
-        InstallRes = install_snapshot(?TEST_DIR, Ets),
-        ?assertMatch({ok, #state{}}, InstallRes),
-        {ok, #state{ets_ref = Tab2}} = InstallRes,
-        ?assertNotEqual(Tab, Tab2),
-        ?assertEqual(TabData, lists:usort(ets:tab2list(Tab2))),
+            InstallRes = install_snapshot(?TEST_DIR, Ets),
+            ?assertMatch({ok, #state{}}, InstallRes),
+            {ok, #state{ets_ref = Tab2}} = InstallRes,
+            ?assertNotEqual(Tab, Tab2),
+            ?assertEqual(TabData, lists:usort(ets:tab2list(Tab2))),
 
-        EtsNew = init(0),
-        InstallResNew = install_snapshot(?TEST_DIR, EtsNew),
-        ?assertMatch({ok, #state{}}, InstallResNew),
-        {ok, #state{ets_ref = Tab3}} = InstallResNew,
-        ?assertEqual(TabData, lists:usort(ets:tab2list(Tab3)))
-    end.
+            EtsNew = init(0),
+            InstallResNew = install_snapshot(?TEST_DIR, EtsNew),
+            ?assertMatch({ok, #state{}}, InstallResNew),
+            {ok, #state{ets_ref = Tab3}} = InstallResNew,
+            ?assertEqual(TabData, lists:usort(ets:tab2list(Tab3)))
+        end,
+        fun() ->
+            Ets2 = init(0),
+            ?assertNotException(error, badarg, install_snapshot("invalid", Ets2)),
+            ?assertMatch({error, _}, install_snapshot("invalid", Ets2))
+        end
+    ].
 
 stop_test(_Ets) ->
     zraft_util:clear_test_dir(?TEST_DIR).
