@@ -40,7 +40,7 @@ query({get, Key}, #state{ets_ref = Tab}) ->
         [Object] ->
             Object;
         [] ->
-            {ok, not_found}
+            not_found
     end,
     {ok, Result};
 
