@@ -32,7 +32,7 @@
 
 init(_PeerId) ->
     #state{
-        ets_ref = ets:new(undefined, [set, protected])
+        ets_ref = ets:new(undefined, [set, public])
     }.
 
 query({get, Key}, #state{ets_ref = Tab}) ->
@@ -91,3 +91,110 @@ install_snapshot(Dir, State = #state{ets_ref = OldTab}) ->
         Else ->
             Else
     end.
+
+-ifdef(TEST).
+
+-include_lib("eunit/include/eunit.hrl").
+
+-define(TEST_DIR, "test-ets-backend").
+
+ets_backend_test_() ->
+    {
+        setup,
+        fun setup_test/0,
+        fun stop_test/1,
+        fun(Ets) ->
+            [
+                test_empty_get(Ets),
+                test_put(Ets),
+                test_get(Ets),
+                test_snapshot(Ets)
+            ]
+        end
+    }.
+
+test_empty_get(Ets) ->
+    [
+        ?_assertMatch({ok, not_found}, query({get, <<"1">>}, Ets)),
+        ?_assertMatch({ok, []}, query({list, '$1'}, Ets)),
+        ?_assertMatch({ok, []}, query({list, {"/", '$2'}}, Ets)),
+        ?_assertMatch({ok, []}, query({list, [{'$1', [], ['$1']}]}, Ets)),
+        fun() ->
+            query(
+                fun
+                    ([]) -> ok;
+                    (_) -> ?assert(false)
+                end,
+                Ets)
+        end,
+        ?_assertMatch({ok, {error, invalid_request}}, query({ls, "/"}, Ets))
+    ].
+
+test_put(Ets) ->
+    [
+        ?_assertMatch({true, Ets}, apply_data({put, {["/", "1"], "v1"}}, Ets)),
+        ?_assertMatch({true, Ets}, apply_data({put, [
+            {["/", "1"], "v1"},
+            {["/", "2", "3"], "v2"}
+        ]}, Ets)),
+        ?_assertMatch({false, Ets}, apply_data({add, [
+            {["/", "1"], "v1"},
+            {["/", "3"], "v3"}
+        ]}, Ets)),
+        ?_assertMatch({{error, invalid_request}, Ets}, apply_data({replace, {["/", "4"], "v4"}}, Ets))
+    ].
+
+test_get(Ets) ->
+    [
+        ?_assertMatch({ok, {["/", "1"], "v1"}}, query({get, ["/", "1"]}, Ets)),
+        ?_assertMatch({ok, [
+            [["1"], "v1"],
+            [["2", "3"], "v2"]
+        ]}, query({list, {["/" | '$1'], '$2'}}, Ets)),
+        ?_assertMatch({ok, [
+            {["/", "1"], "v1"},
+            {["/", "2", "3"], "v2"}
+        ]}, query({list, [{{['$1' | '$2'], '$3'}, [{'=:=', '$1', "/"}], [{{['$1' | '$2'], '$3'}}]}]}, Ets))
+    ].
+
+test_snapshot(Ets = #state{ets_ref = Tab}) ->
+    fun() ->
+        TabData = lists:usort(ets:tab2list(Tab)),
+        Snapshot = snapshot(Ets),
+        ?assertMatch({async, _, Ets}, Snapshot),
+        {_, SnapshotFun, _} = Snapshot,
+        ?assert(is_function(SnapshotFun, 1)),
+        Me = self(),
+        spawn(
+            fun() ->
+                R = SnapshotFun(?TEST_DIR),
+                Me ! {test, R}
+            end),
+        R = receive
+                {test, V}->
+                    V
+            end,
+        ?assertEqual(ok, R),
+        ?assert(filelib:is_file(filename:join(?TEST_DIR, ?STATE_FILENAME))),
+
+        InstallRes = install_snapshot(?TEST_DIR, Ets),
+        ?assertMatch({ok, #state{}}, InstallRes),
+        {ok, #state{ets_ref = Tab2}} = InstallRes,
+        ?assertNotEqual(Tab, Tab2),
+        ?assertEqual(TabData, lists:usort(ets:tab2list(Tab2))),
+
+        EtsNew = init(0),
+        InstallResNew = install_snapshot(?TEST_DIR, EtsNew),
+        ?assertMatch({ok, #state{}}, InstallResNew),
+        {ok, #state{ets_ref = Tab3}} = InstallResNew,
+        ?assertEqual(TabData, lists:usort(ets:tab2list(Tab3)))
+    end.
+
+stop_test(_Ets) ->
+    zraft_util:clear_test_dir(?TEST_DIR).
+
+setup_test() ->
+    zraft_util:set_test_dir(?TEST_DIR),
+    init(0).
+
+-endif.
