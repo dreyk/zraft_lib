@@ -47,7 +47,7 @@
 
 -record(log_op_result,{log_state,last_conf,result}).
 
--record(enrty,{index,term,type,data}).
+-record(entry,{index,term,type,data,global_time=0}).
 
 -record(pconf,{old_peers=[],new_peers=[]}).
 
@@ -61,8 +61,11 @@
 
 -record(peer_start,{epoch,term,allow_commit,leader,back_end,log_state,snapshot_info,conf,conf_state,state_name,proxy_peer_stats=[]}).
 -record(proxy_peer_stat,{peer_state,is_snapshoting}).
--record(swrite,{data,message_id,from}).%%write in session
+-record(swrite,{data,message_id,acc_upto,from,expire_at}).%%write in session
 -record(write,{data,from}).%%optimistic write
+
+-record(swrite_reply,{sequence,data}).
+-record(swrite_error,{sequence,leader,error}).
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").

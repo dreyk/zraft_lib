@@ -36,7 +36,8 @@
 -export([
     cmd/2,
     apply_commit/2,
-    stop/1
+    stop/1,
+    set_state/2
 ]).
 
 -include_lib("zraft_lib/include/zraft.hrl").
@@ -47,17 +48,18 @@
 -define(MAX_COUNT, zraft_util:get_env(max_log_count, 1000)).
 -define(SNAPSHOT_BACKUP, zraft_util:get_env(snapshot_backup, false)).
 
--define(INFO(State,S, As),?MINFO("~p: "++S,[print_id(State)|As])).
--define(INFO(State,S), ?MINFO("~p: "++S,[print_id(State)])).
--define(ERROR(State,S, As),?MERROR("~p: "++S,[print_id(State)|As])).
--define(ERROR(State,S), ?MERROR("~p: "++S,[print_id(State)])).
--define(DEBUG(State,S, As),?MDEBUG("~p: "++S,[print_id(State)|As])).
--define(DEBUG(State,S), ?MDEBUG("~p: "++S,[print_id(State)])).
--define(WARNING(State,S, As),?MWARNING("~p: "++S,[print_id(State)|As])).
--define(WARNING(State,S), ?MWARNING("~p: "++S,[print_id(State)])).
+-define(INFO(State, S, As), ?MINFO("~p: " ++ S, [print_id(State) | As])).
+-define(INFO(State, S), ?MINFO("~p: " ++ S, [print_id(State)])).
+-define(ERROR(State, S, As), ?MERROR("~p: " ++ S, [print_id(State) | As])).
+-define(ERROR(State, S), ?MERROR("~p: " ++ S, [print_id(State)])).
+-define(DEBUG(State, S, As), ?MDEBUG("~p: " ++ S, [print_id(State) | As])).
+-define(DEBUG(State, S), ?MDEBUG("~p: " ++ S, [print_id(State)])).
+-define(WARNING(State, S, As), ?MWARNING("~p: " ++ S, [print_id(State) | As])).
+-define(WARNING(State, S), ?MWARNING("~p: " ++ S, [print_id(State)])).
 
 -record(state, {
     raft,
+    raft_state = follower,
     sessions,
     ustate,
     back_end,
@@ -77,7 +79,11 @@
 start_link(Raft, BackEnd) ->
     gen_server:start_link(?MODULE, [Raft, BackEnd], []).
 
--spec apply_commit(pid(), list(#enrty{})) -> ok.
+-spec set_state(pid(), atom()) -> ok.
+set_state(P, StateName) ->
+    gen_server:cast(P, {set_state, StateName}).
+
+-spec apply_commit(pid(), list(#entry{})) -> ok.
 apply_commit(P, Entries) ->
     gen_server:cast(P, {append, Entries}).
 
@@ -90,7 +96,7 @@ cmd(FSM, Request) ->
     gen_server:cast(FSM, Request).
 
 init([Raft, BackEnd]) ->
-    gen_server:cast(self(),init),
+    gen_server:cast(self(), init),
     State = #state{
         back_end = BackEnd,
         raft = Raft,
@@ -98,7 +104,7 @@ init([Raft, BackEnd]) ->
     },
     {ok, State}.
 
-delayed_init(State=#state{raft = Raft})->
+delayed_init(State = #state{raft = Raft}) ->
     PeerID = zraft_util:peer_id(Raft),
     Dir = filename:join([?DATA_DIR, zraft_util:peer_name(PeerID), "snapshots"]),
     ok = zraft_util:make_dir(Dir),
@@ -115,8 +121,10 @@ handle_call(stop, _From, State) ->
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
-handle_cast(init,State)->
+handle_cast(init, State) ->
     delayed_init(State);
+handle_cast({set_state, StateName}, State) ->
+    {noreply, State#state{raft_state = StateName}};
 handle_cast({copy_timeout, From, Index},
     State = #state{active_snapshot = #snapshoter{from = From, last_index = Index}}) ->
     State1 = discard_snapshot({error, hearbeat_fail}, State),
@@ -128,7 +136,7 @@ handle_cast(Req = #install_snapshot{data = prepare}, State) ->
         {ok, #snapshot_info{index = Index}} ->
             Req1 = Req#install_snapshot{index = Index, data = State#state.last_dir},
             zraft_peer_route:reply_proxy(Req1#install_snapshot.from, Req1),
-            {noreply,State};
+            {noreply, State};
         Else ->
             {stop, Else, State}
     end;
@@ -141,7 +149,7 @@ handle_cast(Req = #install_snapshot{data = finish}, State) ->
 handle_cast(#leader_read_request{from = From, request = Query}, State = #state{back_end = BackEnd, ustate = UState}) ->
     case BackEnd:query(Query, UState) of
         {ok, Res} ->
-            reply_caller(From, Res);
+            reply_caller(From, {ok,Res});
         {error, Err} ->
             reply_caller(From, {error, Err})
     end,
@@ -149,11 +157,11 @@ handle_cast(#leader_read_request{from = From, request = Query}, State = #state{b
 handle_cast(_, State) ->
     {noreply, State}.
 
-handle_info({timeout,_,{'$zraft_timeout', Event}},State)->
-    handle_cast(Event,State);
+handle_info({timeout, _, {'$zraft_timeout', Event}}, State) ->
+    handle_cast(Event, State);
 handle_info({'DOWN', Ref, process, _, normal},
     State = #state{active_snapshot = #snapshoter{mref = Ref, type = copy}}) ->
-    ?INFO(State,"Snapshot transfer has finished"),
+    ?INFO(State, "Snapshot transfer has finished"),
     #state{active_snapshot = Snapshot} = State,
     zraft_util:gen_server_cast_after(
         zraft_consensus:get_election_timeout(),
@@ -163,11 +171,11 @@ handle_info({'DOWN', Ref, process, _, normal},
     {noreply, State#state{active_snapshot = Snapshot1}};
 handle_info({'DOWN', Ref, process, _, normal},
     State = #state{active_snapshot = #snapshoter{mref = Ref}}) ->
-    ?INFO(State,"Snapshot has finished"),
+    ?INFO(State, "Snapshot has finished"),
     finish_snapshot(State);
 handle_info({'DOWN', Ref, process, _, Error},
     State = #state{active_snapshot = #snapshoter{mref = Ref}}) ->
-    ?ERROR(State,"Snapshot make/transfer has failed"),
+    ?ERROR(State, "Snapshot make/transfer has failed"),
     #snapshoter{type = Type} = State#state.active_snapshot,
     State1 = discard_snapshot(Error, State),
     if
@@ -176,6 +184,7 @@ handle_info({'DOWN', Ref, process, _, Error},
         true ->
             {stop, Error, State1}
     end;
+
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -196,32 +205,76 @@ safe_rename(File, Dest) ->
 append([], State) ->
     {noreply, State};
 append(Entries, State) ->
-    #state{last_index = LastIndex, back_end = BackEnd, ustate = UState, log_count = Count} = State,
-    {UState1,Count1, LastIndex1} = lists:foldl(fun(E, {UStateAcc,CountAcc,IndexAcc}) ->
-        #enrty{index = EI,type = Type} = E,
+    #state{
+        raft_state = RaftState,
+        last_index = LastIndex,
+        back_end = BackEnd,
+        ustate = UState,
+        log_count = Count
+    } = State,
+    {UState1, Count1, LastIndex1, GlobalTime1} = lists:foldl(fun(E, {UStateAcc, CountAcc, IndexAcc, TimeAcc}) ->
+        #entry{index = EI, type = Type, global_time = Time} = E,
         if
-            EI =< LastIndex->
-                ?WARNING(State,"Try applt old entry ~p then last applied~p",[E#enrty.index,LastIndex]),
-                exit({error,old_entry}),
-                {UStateAcc,CountAcc,IndexAcc};
-            true->
+            EI =< LastIndex ->
+                ?WARNING(State, "Try apply old entry ~p then last applied~p", [E#entry.index, LastIndex]),
+                exit({error, old_entry}),
+                {UStateAcc, CountAcc, IndexAcc, TimeAcc};
+            true ->
                 if
-                    Type==?OP_DATA->
-                        case E#enrty.data of
-                            #write{data = Data,from = From}->
-                                {Result,NewUState}=BackEnd:apply_data(Data,UStateAcc),
-                                reply_caller(From,Result),
-                                {NewUState,CountAcc+1,EI};
-                            Else->
-                                ?WARNING(State,"Unknow data value ~p",[Else]),
-                                {UStateAcc,CountAcc+1,EI}
+                    Type == ?OP_DATA ->
+                        case E#entry.data of
+                            #write{data = Data, from = From} ->
+                                {Result, NewUState} = BackEnd:apply_data(Data, UStateAcc),
+                                reply_caller(RaftState, From, {ok,Result}),
+                                {NewUState, CountAcc + 1, EI, Time};
+                            #swrite{} = Write ->
+                                NewUState = sapply(TimeAcc,Write, State),
+                                {NewUState, CountAcc + 1, EI, Time};
+                            Else ->
+                                ?WARNING(State, "Unknow data value ~p", [Else]),
+                                {UStateAcc, CountAcc + 1, EI, Time}
                         end;
-                    true->
-                        {UStateAcc,CountAcc+1,EI}
+                    true ->
+                        {UStateAcc, CountAcc + 1, EI, Time}
                 end
-        end end,{UState, Count, LastIndex}, Entries),
+        end end, {UState, Count, LastIndex, 0}, Entries),
+    if
+        GlobalTime1 > 0 ->
+            expire_reuqests(GlobalTime1, State);
+        true ->
+            ok
+    end,
     maybe_take_snapshost(Count1, State#state{last_index = LastIndex1, ustate = UState1}).
 
+sapply(GlobalTime,#swrite{from = From, message_id = Seq, expire_at = ExpireTime, data = Data, acc_upto = AccUpTo}, State) ->
+    {FromPID, Ref} = From,
+    #state{sessions = Sessions, ustate = UState, back_end = BackEnd} = State,
+    case ets:lookup(Sessions, {reply, FromPID, Ref, Seq}) of
+        [{_ReplyID,_,T1}] when T1 =< GlobalTime andalso GlobalTime>0->
+            %%we must expire result, other peers may already do it
+            {Result1, UState1} = BackEnd:apply_data(Data, UState),
+            true = ets:insert(Sessions, {{reply, FromPID, Ref, Seq}, Result1, ExpireTime});
+        [{ReplyID, Result, _}] ->
+            Result1 = Result,
+            UState1 = UState,
+            ets:update_element(Sessions, ReplyID, {3, ExpireTime});
+        [] ->
+            {Result1, UState1} = BackEnd:apply_data(Data, UState),
+            true = ets:insert(Sessions, {{reply, FromPID, Ref, Seq}, Result1, ExpireTime})
+    end,
+    reply_caller(State#state.raft_state, From, #swrite_reply{data = Result1,sequence = Seq}),
+    acc_session(From, AccUpTo, State),
+    UState1.
+
+acc_session(_, 0, _) ->
+    ok;
+acc_session({FromPID, Ref}, UpTo,#state{sessions = Sessions}) ->
+    Match = [{{{reply, FromPID, Ref, '$1'}, '_', '_'}, [{'=<', '$1', {const, UpTo}}], [true]}],
+    ets:select_delete(Sessions, Match).
+
+expire_reuqests(GlobalTime,#state{sessions = Sessions}) ->
+    DelMatch = [{{{reply, '$1', '_', '_'}, '_', '$3'}, [{'=<', '$3', {const, GlobalTime}}], [true]}],
+    ets:select_delete(Sessions, DelMatch).
 
 clean_dir(Dir) ->
     {ok, Files} = file:list_dir(Dir),
@@ -276,7 +329,7 @@ get_index(T) ->
 
 maybe_take_snapshost(NewCount,
     State = #state{max_count = MaxCount,
-        active_snapshot = Active,last_index = Index}) when NewCount >= MaxCount andalso Active == undefined andalso Index>0 ->
+        active_snapshot = Active, last_index = Index}) when NewCount >= MaxCount andalso Active == undefined andalso Index > 0 ->
     take_snapshost(NewCount, State#state{log_count = 0});
 maybe_take_snapshost(NewCount, State) ->
     State1 = State#state{log_count = NewCount},
@@ -286,7 +339,7 @@ finish_install_snapshot(Req = #install_snapshot{from = From, index = I}, State) 
     Reply = install_answer(State#state.raft, Req),
     case State#state.active_snapshot of
         #snapshoter{from = From, last_index = I, type = copy} ->
-            Return  = finish_snapshot(State),
+            Return = finish_snapshot(State),
             zraft_peer_route:reply_proxy(From, Reply#install_snapshot_reply{result = finish}),
             Return;
         _ ->
@@ -315,7 +368,7 @@ prepare_install_snapshot(Req, State = #state{dir = Dir, snapshot_count = SN, raf
     State1 = stop_snaphsoter(State),
     SnapshotDir = filename:join(Dir, "snapshot.tmp-" ++ integer_to_list(SN)),
     ok = zraft_util:make_dir(SnapshotDir),
-    {ok, {{Addr, Port}, Writer}} = zraft_snapshot_receiver:start(print_id(State),SnapshotDir),
+    {ok, {{Addr, Port}, Writer}} = zraft_snapshot_receiver:start(print_id(State), SnapshotDir),
     Reply = install_answer(Raft, Req),
     Reply1 = Reply#install_snapshot_reply{
         addr = Addr,
@@ -334,7 +387,7 @@ prepare_install_snapshot(Req, State = #state{dir = Dir, snapshot_count = SN, raf
         type = copy},
     {noreply, State1#state{snapshot_count = SN + 1, active_snapshot = Snapshoter}}.
 
-install_answer(Raft,#install_snapshot{epoch = E, term = T, request_ref = Ref, index = I}) ->
+install_answer(Raft, #install_snapshot{epoch = E, term = T, request_ref = Ref, index = I}) ->
     #install_snapshot_reply{
         epoch = E,
         request_ref = Ref,
@@ -364,8 +417,8 @@ take_snapshost(Count,
     SnapshotDir = filename:join(Dir, "snapshot.tmp-" ++ integer_to_list(SN)),
     ok = zraft_util:make_dir(SnapshotDir),
     DataDir = filename:join(SnapshotDir, "data"),
-    SessionsFile = filename:join(SnapshotDir,"sessions"),
-    ok = ets:tab2file(Sessions,SessionsFile),
+    SessionsFile = filename:join(SnapshotDir, "sessions"),
+    ok = ets:tab2file(Sessions, SessionsFile),
     ok = zraft_util:make_dir(DataDir),
     {ok, Writer} = zraft_snapshot_writer:start(Raft, self(), LastIndex, ResultFile, SnapshotDir),
     Mref = erlang:monitor(process, Writer),
@@ -399,15 +452,15 @@ read_last_snapshot_info(SnapshotDir) ->
 
 discard_snapshot(_, State = #state{active_snapshot = undefined}) ->
     State;
-discard_snapshot(Reason, State = #state{ back_end = BackEnd, ustate = UState}) ->
+discard_snapshot(Reason, State = #state{back_end = BackEnd, ustate = UState}) ->
     #snapshoter{type = Type} = State#state.active_snapshot,
-    ?ERROR(State,"Snapshot make/transfer has failed: ~p", [Reason]),
+    ?ERROR(State, "Snapshot make/transfer has failed: ~p", [Reason]),
     State1 = stop_snaphsoter(State),
     if
         Type == copy ->
             State1;
         true ->
-            {ok, UState1} = BackEnd:snapshot_failed(Reason,UState),
+            {ok, UState1} = BackEnd:snapshot_failed(Reason, UState),
             State1#state{ustate = UState1}
     end.
 
@@ -465,36 +518,36 @@ finish_snapshot(State) ->
             {noreply, State2};
         true ->
             {ok, UState1} = BackEnd:snapshot_done(UState),
-            State2 = State1#state{ustate  = UState1},
+            State2 = State1#state{ustate = UState1},
             truncate_log(State2),
             {noreply, State2}
     end.
 
 install_snapshot(State = #state{last = 0, back_end = BackEnd, raft = Raft}) ->
-    Sessions = ets:new(session_table_name(State),[ordered_set,{write_concurrency,false},{read_concurrency,false}]),
+    Sessions = ets:new(session_table_name(State), [ordered_set, {write_concurrency, false}, {read_concurrency, false}]),
     {ok, UState} = BackEnd:init(zraft_util:peer_id(Raft)),
-    truncate_log(Raft,#snapshot_info{}),
-    State#state{ustate = UState,sessions = Sessions};
-install_snapshot(State = #state{raft = Raft,ustate = Ustate, back_end = BackEnd, dir = Dir, last = Last}) ->
+    truncate_log(Raft, #snapshot_info{}),
+    State#state{ustate = UState, sessions = Sessions};
+install_snapshot(State = #state{raft = Raft, ustate = Ustate, back_end = BackEnd, dir = Dir, last = Last}) ->
     SnapshotDir = filename:join(Dir, "snapshot-" ++ integer_to_list(Last)),
     DataDir = filename:join(SnapshotDir, "data"),
     SessionsFile = filename:join(SnapshotDir, "sessions"),
     {ok, Ustate1} = BackEnd:install_snapshot(DataDir, Ustate),
     {ok, SnaphotInfo} = read_last_snapshot_info(SnapshotDir),
     #snapshot_info{index = Index} = SnaphotInfo,
-    truncate_log(Raft,SnaphotInfo),
+    truncate_log(Raft, SnaphotInfo),
     Sessions = case ets:file2tab(SessionsFile) of
-                   {ok,Tab}->
+                   {ok, Tab} ->
                        %%expire_sessions(Tab),
                        Tab;
-                   Error->
+                   Error ->
                        ?ERROR(
                            State,
                            "Can't load sessions from snapshot ~p. Continue with empty sessions. Reason is ~p",
-                           [SessionsFile,Error]
+                           [SessionsFile, Error]
                        ),
-                       ets:new(session_table_name(State),[ordered_set,{write_concurrency,false},{read_concurrency,false}])
-    end,
+                       ets:new(session_table_name(State), [ordered_set, {write_concurrency, false}, {read_concurrency, false}])
+               end,
     State#state{
         ustate = Ustate1,
         last_index = Index,
@@ -504,54 +557,47 @@ install_snapshot(State = #state{raft = Raft,ustate = Ustate, back_end = BackEnd,
         sessions = Sessions
     }.
 
-session_table_name(#state{raft = Raft})->
-    {{Name,_},_}=Raft,
-    list_to_atom(atom_to_list(Name)++"_sessions").
+session_table_name(#state{raft = Raft}) ->
+    {{Name, _}, _} = Raft,
+    list_to_atom(atom_to_list(Name) ++ "_sessions").
 
-truncate_log(State=#state{raft = Raft,last_dir = SnapshotDir})->
+truncate_log(State = #state{raft = Raft, last_dir = SnapshotDir}) ->
     case read_last_snapshot_info(SnapshotDir) of
-        {ok,Info}->
-            truncate_log(Raft,Info);
-        _->
-            ?ERROR(State,"Can't read last snapshot ~s",[SnapshotDir]),
+        {ok, Info} ->
+            truncate_log(Raft, Info);
+        _ ->
+            ?ERROR(State, "Can't read last snapshot ~s", [SnapshotDir]),
             ok
     end.
 
-truncate_log(Raft,SnapshotInfo)->
-    zraft_consensus:truncate_log(Raft,SnapshotInfo).
+truncate_log(Raft, SnapshotInfo) ->
+    zraft_consensus:truncate_log(Raft, SnapshotInfo).
 
-print_id(#state{raft = Raft})->
+print_id(#state{raft = Raft}) ->
     zraft_util:peer_id(Raft).
 
-%% expire_sessions(Sessions)->
-%%     Now = zraft_util:now_millisec()+1,
-%%     Match = [{{{session,'$1'},'$2','$3'},[{'<','$3',{const,Now}}],['$1','$2']}],
-%%     case ets:select(Sessions,Match) of
-%%         []->
-%%             ok;
-%%         Expire->
-%%             ets:delete(Sessions,{})
-%%     end.
-%%
-%% expire_session(MRef,Sessions)->
-%%     L = ets:match(Sessions,{{MRef,'$1'},'$2','_'}).
 
-reply_caller(undefined,_)->
+reply_caller(RaftState, From, _) when RaftState /= leader orelse From == undefined ->
     ok;
-reply_caller(From,Msg)->
-    gen_fsm:reply(From,Msg).
+reply_caller(leader, From, Msg) ->
+    reply_caller(From, Msg).
+
+reply_caller(undeined, _) ->
+    ok;
+reply_caller(From, Msg) ->
+    gen_fsm:reply(From, Msg).
 
 
 -ifdef(TEST).
 
 setup() ->
-    application:set_env(zraft_lib,max_log_count,10),
-    application:set_env(zraft_lib,snapshot_backup,true),
+    application:set_env(zraft_lib, max_log_count, 10),
+    application:set_env(zraft_lib, snapshot_backup, true),
     zraft_util:set_test_dir("test-snapshot"),
     ok.
 clear_setup(_) ->
-    application:unset_env(zraft_lib,max_log_count),
-    application:unset_env(zraft_lib,snapshot_backup),
+    application:unset_env(zraft_lib, max_log_count),
+    application:unset_env(zraft_lib, snapshot_backup),
     zraft_util:clear_test_dir("test-snapshot"),
     ok.
 
@@ -573,22 +619,22 @@ read_write() ->
         Raft = {{test, node()}, self()},
         {ok, P} = start_link(Raft, zraft_dict_backend),
         receive
-            {'$gen_all_state_event',SnapshotInfo}->
-                ?assertMatch(#snapshot_info{index = 0,conf = ?BLANK_CONF,conf_index = 0,term = 0},SnapshotInfo);
-            Else->
-                ?assertMatch(result,Else)
-        after 2000->
+            {'$gen_all_state_event', SnapshotInfo} ->
+                ?assertMatch(#snapshot_info{index = 0, conf = ?BLANK_CONF, conf_index = 0, term = 0}, SnapshotInfo);
+            Else ->
+                ?assertMatch(result, Else)
+        after 2000 ->
             ?assert(false)
         end,
-        apply_commit(P, [#enrty{index = 1, data = #write{data = {1, "1"}}, term = 1, type = ?OP_DATA}]),
+        apply_commit(P, [#entry{index = 1, data = #write{data = {1, "1"}}, term = 1, type = ?OP_DATA}]),
         Stat = sys:get_state(P),
-        ?assertMatch(#state{last_index = 1,last_snapshot_index = 0,log_count = 1},Stat),
+        ?assertMatch(#state{last_index = 1, last_snapshot_index = 0, log_count = 1}, Stat),
         Ref = make_ref(),
         Me = {self(), Ref},
         cmd(P, #leader_read_request{from = Me, request = 1}),
         receive
             {Ref, Res} ->
-                ?assertMatch({ok, "1"}, Res);
+                ?assertMatch({ok,{ok, "1"}}, Res);
             Else1 ->
                 ?assertMatch(result, Else1)
         after 1000 ->
@@ -597,7 +643,7 @@ read_write() ->
         cmd(P, #leader_read_request{from = Me, request = 2}),
         receive
             {Ref, Res1} ->
-                ?assertMatch({ok,not_found}, Res1);
+                ?assertMatch({ok, not_found}, Res1);
             Else2 ->
                 ?assertMatch(result, Else2)
         after 1000 ->
@@ -611,11 +657,11 @@ snapshot() ->
         Raft = {{test, node()}, self()},
         {ok, P} = start_link(Raft, zraft_dict_backend),
         receive
-            {'$gen_all_state_event',SnapshotInfo}->
-                ?assertMatch(#snapshot_info{index = 0,conf = ?BLANK_CONF,conf_index = 0,term = 0},SnapshotInfo);
-            Else->
-                ?assertMatch(result,Else)
-        after 2000->
+            {'$gen_all_state_event', SnapshotInfo} ->
+                ?assertMatch(#snapshot_info{index = 0, conf = ?BLANK_CONF, conf_index = 0, term = 0}, SnapshotInfo);
+            Else ->
+                ?assertMatch(result, Else)
+        after 2000 ->
             ?assert(false)
         end,
         Ref = make_ref(),
@@ -629,55 +675,148 @@ snapshot() ->
         after 1000 ->
             ?assert(false)
         end,
-        apply_commit(P, [#enrty{index = I, data = #write{data = {I, integer_to_list(I)}}, term = 1, type = ?OP_DATA} || I <- lists:seq(1, 10)]),
+        apply_commit(P, [#entry{index = I, data = #write{data = {I, integer_to_list(I)}}, term = 1, type = ?OP_DATA} || I <- lists:seq(1, 10)]),
         receive
-            {'$gen_event',{make_snapshot_info,{ReqRef1,From},Index}}->
-                ?assertEqual(10,Index),
-                From ! {ReqRef1,#snapshot_info{index = Index,conf = [],term = 1,conf_index = 1}};
-            Else2->
-                ?assertMatch(result,Else2)
-        after 2000->
+            {'$gen_event', {make_snapshot_info, {ReqRef1, From}, Index}} ->
+                ?assertEqual(10, Index),
+                From ! {ReqRef1, #snapshot_info{index = Index, conf = [], term = 1, conf_index = 1}};
+            Else2 ->
+                ?assertMatch(result, Else2)
+        after 2000 ->
             ?assert(false)
         end,
         cmd(P, #leader_read_request{from = Me, request = 1}),
         receive
             {Ref, Res1} ->
-                ?assertMatch({ok, "1"}, Res1);
+                ?assertMatch({ok,{ok, "1"}}, Res1);
             Else3 ->
                 ?assertMatch(result, Else3)
         after 1000 ->
             ?assert(false)
         end,
         receive
-            {'$gen_all_state_event',SnapshotInfo1}->
-                ?assertMatch(#snapshot_info{index = 10,conf = [],conf_index = 1,term = 1},SnapshotInfo1);
-            Else4->
-                ?assertMatch(result,Else4)
-        after 3000->
+            {'$gen_all_state_event', SnapshotInfo1} ->
+                ?assertMatch(#snapshot_info{index = 10, conf = [], conf_index = 1, term = 1}, SnapshotInfo1);
+            Else4 ->
+                ?assertMatch(result, Else4)
+        after 3000 ->
             ?assert(false)
         end,
         ok = stop(P),
         {ok, P1} = start_link(Raft, zraft_dict_backend),
         receive
-            {'$gen_all_state_event',SnapshotInfo2}->
-                ?assertMatch(#snapshot_info{index = 10,conf = [],conf_index = 1,term = 1},SnapshotInfo2);
-            Else5->
-                ?assertMatch(result,Else5)
-        after 2000->
+            {'$gen_all_state_event', SnapshotInfo2} ->
+                ?assertMatch(#snapshot_info{index = 10, conf = [], conf_index = 1, term = 1}, SnapshotInfo2);
+            Else5 ->
+                ?assertMatch(result, Else5)
+        after 2000 ->
             ?assert(false)
         end,
         cmd(P1, #leader_read_request{from = Me, request = 10}),
         receive
             {Ref, Res3} ->
-                ?assertMatch({ok, "10"}, Res3);
+                ?assertMatch({ok,{ok, "10"}}, Res3);
             Else6 ->
                 ?assertMatch(result, Else6)
         after 1000 ->
             ?assert(false)
         end,
         Stat1 = sys:get_state(P1),
-        ?assertMatch(#state{last_index = 10,last_snapshot_index = 10,log_count = 0},Stat1),
+        ?assertMatch(#state{last_index = 10, last_snapshot_index = 10, log_count = 0}, Stat1),
         ok = stop(P1)
     end}.
 
-- endif.
+setup_sessions() ->
+    meck:new(zraft_dict_backend),
+    #state{back_end = zraft_dict_backend, raft_state = leader}.
+stop_sessions(_) ->
+    meck:unload(zraft_dict_backend),
+    ok.
+
+sessions_test_() ->
+    {
+        setup,
+        fun setup_sessions/0,
+        fun stop_sessions/1,
+        fun(X) ->
+            [
+                sessions(X)
+            ]
+        end
+    }.
+sessions(State0) ->
+    {"test sessions", fun() ->
+        Sessions = ets:new(sessions, [ordered_set, {write_concurrency, false}, {read_concurrency, false}]),
+        State = State0#state{sessions = Sessions},
+        Ref1 = make_ref(),
+        Req1 = #swrite{data = 1, acc_upto = 0, expire_at = 10, from = {self(), Ref1}, message_id = 1},
+        meck:expect(zraft_dict_backend, apply_data, fun(_, S1) ->
+            {new_result1, S1} end),
+        sapply(0,Req1, State),
+        receive
+            R1 ->
+                ?assertMatch({_,#swrite_reply{sequence = 1,data = new_result1}}, R1)
+        end,
+        E1 = ets:lookup(Sessions, {reply, self(), Ref1, 1}),
+        ?assertMatch([{_, new_result1, 10}], E1),
+
+        Ref2 = make_ref(),
+        meck:expect(zraft_dict_backend, apply_data, fun(_, S1) ->
+            {new_result2, S1} end),
+        Req2 = #swrite{data = 1, acc_upto = 0, expire_at = 20, from = {self(), Ref2}, message_id = 1},
+        sapply(0,Req2, State),
+        receive
+            R2 ->
+                ?assertMatch({_, #swrite_reply{sequence = 1,data = new_result2}}, R2)
+        end,
+        E2 = ets:lookup(Sessions, {reply, self(), Ref2, 1}),
+        ?assertMatch([{_, new_result2, 20}], E2),
+
+        sapply(0,Req1#swrite{expire_at = 11}, State),
+        receive
+            R3 ->
+                ?assertMatch({_, #swrite_reply{sequence = 1,data = new_result1}}, R3)
+        end,
+        E3 = ets:lookup(Sessions, {reply, self(), Ref1, 1}),
+        ?assertMatch([{_, new_result1, 11}], E3),
+
+        Req3 = #swrite{data = 1, acc_upto = 1, expire_at = 30, from = {self(), Ref1}, message_id = 2},
+        sapply(0,Req3, State),
+        receive
+            R4 ->
+                ?assertMatch({_, #swrite_reply{sequence = 2,data = new_result2}}, R4)
+        end,
+        E4 = ets:lookup(Sessions, {reply, self(), Ref1, 2}),
+        ?assertMatch([{_, new_result2, 30}], E4),
+
+        E5 = ets:lookup(Sessions, {reply, self(), Ref1, 1}),
+        ?assertMatch([], E5),
+
+        expire_reuqests(20, State),
+        E6 = ets:lookup(Sessions, {reply, self(), Ref1, 2}),
+        ?assertMatch([{_, new_result2, 30}], E6),
+        E7 = ets:lookup(Sessions, {reply, self(), Ref2, 1}),
+        ?assertMatch([], E7),
+
+        Req4 = #swrite{data = 1, acc_upto = 2, expire_at = 30, from = {self(), Ref1}, message_id = 2},
+        sapply(0,Req4, State),
+        receive
+            R5 ->
+                ?assertMatch({_, #swrite_reply{sequence = 2,data = new_result2}}, R5)
+        end,
+        E8 = ets:lookup(Sessions, {reply, self(), Ref1, 2}),
+        ?assertMatch([], E8),
+        sapply(0,Req3, State),
+        receive
+            R6 ->
+                ?assertMatch({_, #swrite_reply{sequence = 2,data = new_result2}}, R6)
+        end,
+        E9 = ets:lookup(Sessions, {reply, self(), Ref1, 2}),
+        ?assertMatch([{_, new_result2, 30}], E9),
+        expire_reuqests(30,State),
+        Vals1 = ets:tab2list(Sessions),
+        ?assertEqual([], Vals1)
+    end}.
+
+
+-endif.
