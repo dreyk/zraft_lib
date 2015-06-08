@@ -24,9 +24,13 @@
 %% API
 -export([init/1, query/2, apply_data/2, snapshot/1, snapshot_done/1, snapshot_failed/2, install_snapshot/2]).
 
+-export_type([state/0]).
+
 -record(state, {
     ets_ref :: ets:tab()
 }).
+
+-opaque state() :: #state{}.
 
 -define(STATE_FILENAME, "state").
 
@@ -34,6 +38,13 @@ init(_PeerId) ->
     #state{
         ets_ref = ets:new(undefined, [set, public])
     }.
+
+-spec query
+    ({get, Key :: term()}, state()) -> {ok, Object :: term()} | {ok, not_found};
+    ({list, Pattern}, state()) -> {ok, [Object :: term()]} when
+        Pattern :: ets:match_pattern() | ets:match_spec();
+    (Fun, state()) -> {ok, any()} when
+        Fun :: fun((Item :: any()) -> any()).
 
 query({get, Key}, #state{ets_ref = Tab}) ->
     Result = case ets:lookup(Tab, Key) of
@@ -59,6 +70,16 @@ query(SelectFun, #state{ets_ref = Tab}) when is_function(SelectFun) ->
 query(_, _State) ->
     {ok, {error, invalid_request}}.
 
+
+-spec apply_data
+    (WriteCommand :: {CommandName, CommandData}, state()) -> {Result :: boolean()} when
+        CommandName :: put | append,
+        CommandData :: [{Key :: term(), Value :: term()}];
+    (WriteCommand :: {delete, Keys}, state()) -> {Result :: boolean()} when
+        Keys :: [term()];
+    (WriteCommand :: {increment, CounterName, Increment}, state()) -> {NewCounterValue :: integer()} when
+        CounterName :: term(),
+        Increment :: integer().
 
 apply_data(Command, State) ->
     try
