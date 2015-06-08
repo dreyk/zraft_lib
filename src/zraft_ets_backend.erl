@@ -63,7 +63,7 @@ query(_, _State) ->
 apply_data({put, Data}, State = #state{ets_ref = Tab}) ->
     Result = ets:insert(Tab, Data),
     {Result, State};
-apply_data({add, Data}, State = #state{ets_ref = Tab}) ->
+apply_data({append, Data}, State = #state{ets_ref = Tab}) ->
     Result = ets:insert_new(Tab, Data),
     {Result, State};
 apply_data({delete, Keys}, State = #state{ets_ref = Tab}) when is_list(Keys) ->
@@ -136,14 +136,14 @@ test_empty_get(Ets) ->
 test_put(Ets) ->
     fun() ->
         ?assertMatch({true, Ets}, apply_data({put, {["/", "1"], "v1"}}, Ets)),
-        ?assertMatch({false, Ets}, apply_data({add, {["/", "1"], "v1"}}, Ets)),
+        ?assertMatch({false, Ets}, apply_data({append, {["/", "1"], "v1"}}, Ets)),
         ?assertMatch({true, Ets}, apply_data({delete, [["/", "1"]]}, Ets)),
-        ?assertMatch({true, Ets}, apply_data({add, {["/", "1"], "v1"}}, Ets)),
+        ?assertMatch({true, Ets}, apply_data({append, {["/", "1"], "v1"}}, Ets)),
         ?assertMatch({true, Ets}, apply_data({put, [
             {["/", "1"], "v1"},
             {["/", "2", "3"], "v2"}
         ]}, Ets)),
-        ?assertMatch({false, Ets}, apply_data({add, [
+        ?assertMatch({false, Ets}, apply_data({append, [
             {["/", "1"], "v1"},
             {["/", "3"], "v3"}
         ]}, Ets)),
