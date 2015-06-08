@@ -66,6 +66,9 @@ apply_data({put, Data}, State = #state{ets_ref = Tab}) ->
 apply_data({add, Data}, State = #state{ets_ref = Tab}) ->
     Result = ets:insert_new(Tab, Data),
     {Result, State};
+apply_data({delete, Keys}, State = #state{ets_ref = Tab}) when is_list(Keys) ->
+    lists:foreach(fun(Key) -> ets:delete(Tab, Key) end, Keys),
+    {true, State};
 apply_data(_, State) ->
     {{error, invalid_request}, State}.
 
@@ -131,18 +134,21 @@ test_empty_get(Ets) ->
     ].
 
 test_put(Ets) ->
-    [
-        ?_assertMatch({true, Ets}, apply_data({put, {["/", "1"], "v1"}}, Ets)),
-        ?_assertMatch({true, Ets}, apply_data({put, [
+    fun() ->
+        ?assertMatch({true, Ets}, apply_data({put, {["/", "1"], "v1"}}, Ets)),
+        ?assertMatch({false, Ets}, apply_data({add, {["/", "1"], "v1"}}, Ets)),
+        ?assertMatch({true, Ets}, apply_data({delete, [["/", "1"]]}, Ets)),
+        ?assertMatch({true, Ets}, apply_data({add, {["/", "1"], "v1"}}, Ets)),
+        ?assertMatch({true, Ets}, apply_data({put, [
             {["/", "1"], "v1"},
             {["/", "2", "3"], "v2"}
         ]}, Ets)),
-        ?_assertMatch({false, Ets}, apply_data({add, [
+        ?assertMatch({false, Ets}, apply_data({add, [
             {["/", "1"], "v1"},
             {["/", "3"], "v3"}
         ]}, Ets)),
-        ?_assertMatch({{error, invalid_request}, Ets}, apply_data({replace, {["/", "4"], "v4"}}, Ets))
-    ].
+        ?assertMatch({{error, invalid_request}, Ets}, apply_data({replace, {["/", "4"], "v4"}}, Ets))
+    end.
 
 test_get(Ets) ->
     [
