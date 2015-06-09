@@ -30,56 +30,74 @@
     ets_ref :: ets:tab()
 }).
 
+-record(item, {
+    key :: term(),
+    value :: term(),
+    counter = 0 :: non_neg_integer(),
+    mode = object:: object | group
+}).
+
 -opaque state() :: #state{}.
 
 -define(STATE_FILENAME, "state").
 
 init(_PeerId) ->
     #state{
-        ets_ref = ets:new(undefined, [set, public])
+        ets_ref = ets:new(undefined, [set, public, {keypos, #item.key}])
     }.
 
 -spec query
-    ({get, Key :: term()}, state()) -> {ok, Object :: term()} | {ok, not_found};
-    ({list, Pattern}, state()) -> {ok, [Object :: term()]} when
-        Pattern :: ets:match_pattern() | ets:match_spec();
-    (Fun, state()) -> {ok, any()} when
-        Fun :: fun((Item :: any()) -> any()).
+    ({get, Key :: term()}, state()) -> {ok, KeyList} | {ok, Object :: zraft_backend:kv()} | {ok, not_found} when
+        KeyList :: {GroupKey :: term(), [Key :: term()]};
+    ({list, Pattern :: ets:match_pattern()}, state()) -> {ok, [KeyList]} | {ok, [Object :: zraft_backend:kv()]} when
+        KeyList :: {GroupKey :: term(), [Key :: term()]};
+    ({fold, SelectFunction, Acc :: term()}, state()) -> {ok, term()} when
+        SelectFunction :: fun((Key :: term(), Value :: term(), Acc :: term()) -> term()).
 
 query({get, Key}, #state{ets_ref = Tab}) ->
     Result = case ets:lookup(Tab, Key) of
-        [Object] ->
-            Object;
+        [#item{key = Key, value = Value}] ->
+            {Key, Value};
         [] ->
             not_found
     end,
     {ok, Result};
 
-%% Pattern is match spec
-query({list, Pattern}, #state{ets_ref = Tab}) when is_list(Pattern)->
-    {ok, ets:select(Tab, Pattern)};
-
 %% Pattern is match pattern
-query({list, Pattern}, #state{ets_ref = Tab}) when is_tuple(Pattern) orelse is_atom(Pattern) ->
-    {ok, ets:match(Tab, Pattern)};
+query({list, Pattern}, #state{ets_ref = Tab}) ->
+    ActualPattern = #item{key = Pattern},
+    {ok, lists:map(
+        fun(#item{key = Key, value = Value}) ->
+            {Key, Value}
+        end, ets:match(Tab, ActualPattern))
+    };
 
-%% Pattern is function
-query(SelectFun, #state{ets_ref = Tab}) when is_function(SelectFun) ->
-    {ok, SelectFun(ets:tab2list(Tab))};
+query({fold, SelectFun, Acc0}, #state{ets_ref = Tab}) when is_function(SelectFun) ->
+    try
+        {ok, ets:foldl(
+            fun(#item{key = Key, value = Value}, Acc) ->
+                SelectFun(Key, Value, Acc)
+            end, Acc0, Tab)
+        }
+    catch
+        error:badarg ->
+            {error, invalid_request};
+        A:B ->
+            {error, {A, B}}
 
+    end;
 query(_, _State) ->
     {ok, {error, invalid_request}}.
 
 
+-type apply_data_result() :: {{ok, [Key :: term()]}, state()} | {{error, Reason :: term()}, state()}.
+-type increment_counter_result() ::
+      {{ok, NewCounterValue :: integer(), [Key :: term()]}, state()}
+    | {{error, Reason :: term()}, state()}.
 -spec apply_data
-    (WriteCommand :: {CommandName, CommandData}, state()) -> {Result :: boolean()} when
-        CommandName :: put | append,
-        CommandData :: [{Key :: term(), Value :: term()}];
-    (WriteCommand :: {delete, Keys}, state()) -> {Result :: boolean()} when
-        Keys :: [term()];
-    (WriteCommand :: {increment, CounterName, Increment}, state()) -> {NewCounterValue :: integer()} when
-        CounterName :: term(),
-        Increment :: integer().
+    (WriteCommand :: {put | put_new | append, Data :: [zraft_backend:kv()]}, state()) -> apply_data_result();
+    (WriteCommand :: {delete, Keys :: [term()]}, state()) -> apply_data_result();
+    (WriteCommand :: {increment, CounterName :: term(), Increment :: integer()}, state()) -> increment_counter_result().
 
 apply_data(Command, State) ->
     try
@@ -88,21 +106,6 @@ apply_data(Command, State) ->
         error:badarg ->
             {{error, invalid_request}, State}
     end.
-
-apply_data_unsafe({put, Data}, State = #state{ets_ref = Tab}) ->
-    Result = ets:insert(Tab, Data),
-    {Result, State};
-apply_data_unsafe({append, Data}, State = #state{ets_ref = Tab}) ->
-    Result = ets:insert_new(Tab, Data),
-    {Result, State};
-apply_data_unsafe({delete, Keys}, State = #state{ets_ref = Tab}) when is_list(Keys) ->
-    lists:foreach(fun(Key) -> ets:delete(Tab, Key) end, Keys),
-    {true, State};
-apply_data_unsafe({increment, Key, Incr}, State = #state{ets_ref = Tab}) ->
-    NewVal = ets:update_counter(Tab, Key, Incr),
-    {NewVal, State};
-apply_data_unsafe(_, State) ->
-    {{error, invalid_request}, State}.
 
 snapshot(State = #state{ets_ref = Tab}) ->
     SaveFun = fun(Dest) ->
@@ -126,6 +129,94 @@ install_snapshot(Dir, State = #state{ets_ref = OldTab}) ->
         Else ->
             Else
     end.
+
+%% ---------------------------------------------------------------------------------------------------------------------
+%% PRIVATE FUNCTIONS
+%% ---------------------------------------------------------------------------------------------------------------------
+
+apply_data_unsafe({put, Data}, State = #state{ets_ref = Tab})->
+    DataList = make_list(Data),
+    OverwriteGroup = lists:any(
+        fun({K, _V}) ->
+            case ets:lookup(Tab, K) of
+                [#item{mode = group}] -> true;
+                _ -> false
+            end
+        end, DataList),
+    Result = if
+        OverwriteGroup ->
+            {error, overwrite_group};
+        true ->
+            Items = make_items(DataList),
+            true = ets:insert(Tab, Items),
+            Keys = extract_keys(DataList),
+            {ok, Keys}
+    end,
+    {Result, State};
+apply_data_unsafe({put_new, Data}, State = #state{ets_ref = Tab}) ->
+    DataList  = make_list(Data),
+    Items = make_items(DataList),
+    Result = case ets:insert_new(Tab, Items) of
+        true ->
+            {ok, extract_keys(DataList)};
+        false ->
+            {error, overwrite_request}
+    end,
+    {Result, State};
+apply_data_unsafe({delete, Keys}, State = #state{ets_ref = Tab}) when is_list(Keys) ->
+    AllKeys = find_keys_recursive(Tab, Keys, []),
+    lists:foreach(fun(Key) -> ets:delete(Tab, Key) end, AllKeys),
+    {{ok, AllKeys}, State};
+apply_data_unsafe({increment, Key, Incr}, State = #state{ets_ref = Tab}) ->
+    NewVal = ets:update_counter(Tab, Key, Incr),
+    {NewVal, State};
+apply_data_unsafe({append, GroupKVs}, State = #state{ets_ref = Tab}) ->
+    DataList = make_list(GroupKVs),
+    AllKeys = lists:flatmap(
+        fun(GroupKey) ->
+            append_one(GroupKey, Tab)
+        end, DataList),
+    {{ok, AllKeys}, State};
+apply_data_unsafe(_, State) ->
+    {{error, invalid_request}, State}.
+
+append_one({GroupKey, Value}, Tab) ->
+    GroupItem = #item{counter = NewCnt} = case ets:lookup(Tab, GroupKey) of
+       [#item{counter = Cnt, mode = group} = I] ->
+           I#item{counter = Cnt + 1};
+       [#item{counter = Cnt, mode = object} = I] ->
+           I#item{counter = Cnt + 1, value = [], mode = group};
+       [] ->
+           #item{mode = group, value = []}
+    end,
+    NewKey = {GroupKey, NewCnt},
+    NewItem = #item{key = NewKey, value = Value},
+    true = ets:insert(Tab, [GroupItem, NewItem]),
+    [GroupKey, NewKey].
+
+find_keys_recursive(Tab, Keys, Acc0) ->
+    lists:foldl(
+        fun(Key, List) ->
+            case ets:lookup(Tab, Key) of
+                [#item{key = Key, mode = object}] ->
+                    [Key | List];
+                [#item{key = Key, mode = group, value = KeyList}] ->
+                    find_keys_recursive(Tab, KeyList, [Key | List]);
+                [] ->
+                    List
+            end
+        end, Acc0, Keys).
+
+make_items(DataList) ->
+    lists:map(fun({K, V}) -> #item{key = K, value = V} end, DataList).
+
+make_list(Data) when is_list(Data) ->
+    Data;
+make_list(Data) ->
+    [Data].
+
+extract_keys(DataList) ->
+    element(1, lists:unzip(DataList)).
 
 -ifdef(TEST).
 
