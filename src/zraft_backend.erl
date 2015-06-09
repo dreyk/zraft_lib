@@ -24,19 +24,20 @@
 -export([]).
 
 -type state() :: term().
--type read_cmd()::term().
--type write_cmd()::term().
--type snapshot_fun()::fun((Dest :: file:filename()) -> ok | {error, Reason :: term()}).
-
+-type read_cmd() :: term().
+-type write_cmd() :: term().
+-type snapshot_fun() :: fun((Dest :: file:filename()) -> ok | {error, Reason :: term()}).
+-type kv() :: {Key :: term(), Value :: term()}.
 
 %% init backend FSM
 -callback init(PeerId :: zraft_consensus:peer_id()) -> state().
 
 %% read/query data from FSM
--callback query(ReadCmd :: read_cmd(), State :: state()) -> {ok, Data :: term()}.
+-callback query(ReadCmd :: read_cmd(), State :: state()) -> {ok, Data :: [kv()]}.
 
 %% write data to FSM
--callback apply_data(WriteCmd :: write_cmd(), State :: state()) -> {Result :: term(), State :: state()}.
+-callback apply_data(WriteCmd :: write_cmd(), State :: state()) -> {Result, State :: state()}
+    when Result :: {ok, Keys :: [term()]} | {error, Reason :: term()}.
 
 %% Prepare FSM to take snapshot async if it's possible otherwice return function to take snapshot immediatly
 -callback snapshot(State :: state())->{sync, snapshot_fun(), state()} | {async, snapshot_fun(), state()}.
