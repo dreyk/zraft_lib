@@ -308,20 +308,19 @@ peer_execute_sessions(Session = #light_session{}, Fun, Start, Timeout) ->
     end.
 
 execute_once(Session, Data, Start, Timeout) ->
-    Ref = erlang:make_ref(),
-    SWrite = #swrite{data = Data, acc_upto = 0, from = {self(), Ref}, message_id = 1},
-    execute_once(Session, Ref, 1, SWrite, Start, Timeout).
+    SWrite = #swrite{data = Data, acc_upto = 0, from = self(), message_id = 1},
+    execute_once(Session,1, SWrite, Start, Timeout).
 
-execute_once(Session, Ref, Seq, SWrite, Start, Timeout) ->
+execute_once(Session, Seq, SWrite, Start, Timeout) ->
     Leader = current_session_leader(Session),
-    MRef = zraft_consensus:send_swrite(Leader, SWrite#swrite{expire_at = Timeout}),
+    MRef = zraft_consensus:send_swrite(Leader, SWrite#swrite{timeout = Timeout}),
     Next = receive
-               {Ref, #swrite_error{sequence = Seq, error = not_leader, leader = NewLeader}} when NewLeader /= undefined ->
+               #swrite_error{sequence = Seq, error = not_leader, leader = NewLeader} when NewLeader /= undefined ->
                    {continue, Session#light_session{leader = NewLeader}};
-               {Ref,#swrite_error{}}->
+               #swrite_error{sequence = Seq}->
                    Session1 = next_leader(Session, Leader),
                    {continue, Session1};
-               {Ref, #swrite_reply{sequence = Seq, data = Result}} ->
+               #swrite_reply{sequence = Seq, data = Result} ->
                    {Result, Session#light_session{leader = Leader}};
                {'DOWN', MRef, process, _, _Error} ->
                    Session1 = next_leader(Session, Leader),
@@ -336,7 +335,7 @@ execute_once(Session, Ref, Seq, SWrite, Start, Timeout) ->
                 true ->
                     {error, timeout};
                 {false,_Timeout1} ->
-                    execute_once(NextSession, Ref, Seq, SWrite,Start, Timeout)
+                    execute_once(NextSession, Seq, SWrite,Start, Timeout)
             end;
         Else ->
             Else

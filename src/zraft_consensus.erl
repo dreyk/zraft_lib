@@ -55,7 +55,8 @@
     install_snapshot_reply/0,
     snapshot_info/0,
     raft_runtime_error/0,
-    session_write/0
+    session_write/0,
+    csession/0
 ]).
 
 -export([
@@ -68,9 +69,10 @@
     get_election_timeout/0,
     make_snapshot_info/3,
     need_snapshot/2,
-    read_request/3,
+    read_request/4,
     get_conf_request/2,
     query/3,
+    query/4,
     query_local/3,
     get_conf/2,
     write/3,
@@ -78,7 +80,8 @@
     truncate_log/2,
     set_new_configuration/4,
     stat/1,
-    send_swrite/2
+    send_swrite/2,
+    reply_caller/2
 ]).
 
 
@@ -135,6 +138,7 @@
 -type snapshot_info() :: #snapshot_info{}.
 -type raft_runtime_error() :: {error, term()}.
 -type session_write()::#swrite{}.
+-type csession()::term().
 
 
 %%%===================================================================
@@ -144,13 +148,18 @@
 %% @doc Query data form user backend from current peer.
 -spec query_local(peer_id(), term(), timeout()) -> {ok, term()}|{error, term()}.
 query_local(PeerID, Query, Timeout) ->
-    Req = #read_request_local{function = read_request, args = [Query]},
+    Req = #read_request_local{function = read_request, args = [false,Query]},
     gen_fsm:sync_send_all_state_event(PeerID, Req, Timeout).
 
 %% @doc Query data form user backend.
 -spec query(peer_id(), term(), timeout()) -> {ok, term()}|{leader, peer_id()}|{error, timeout}.
 query(PeerID, Query, Timeout) ->
-    send_leader_request(PeerID, read_request, [Query], Timeout).
+    send_leader_request(PeerID, read_request, [false,Query], Timeout).
+
+%% @doc Query data form user backend and set watch for future change.
+-spec query(peer_id(),term(),term(), timeout()) -> {ok, term()}|{leader, peer_id()}|{error, timeout}.
+query(PeerID,WatchRef,Query, Timeout) ->
+    send_leader_request(PeerID, read_request, [WatchRef,Query], Timeout).
 
 %% @doc Read last stable quorum configuration
 -spec get_conf(peer_id(), timeout()) -> {ok, term()}|{leader, peer_id()}|retry|{error, term()}.
@@ -343,16 +352,16 @@ follower(_Event, _From, State) ->
 bootstrap(From, State = #state{config = ?BLANK_CONF, id = PeerID}) ->
     case check_blank_state(State) of
         true ->
-            gen_fsm:reply(From, ok),
+            reply_caller(From, ok),
             Entry = new_entry(?OP_CONFIG,#pconf{old_peers = [PeerID]},State#state{current_term = 1}),
             State1 = append([Entry], State),
             step_down(blank,1, State1);
         _ ->
-            gen_fsm:reply(From, {error, invalid_blank_state}),
+            reply_caller(From, {error, invalid_blank_state}),
             {stop, invalid_blank_state, State}
     end;
 bootstrap(From, State) ->
-    gen_fsm:reply(From, {error, invalid_blank_state}),
+    reply_caller(From, {error, invalid_blank_state}),
     {next_state, follower, State}.
 
 %%%===================================================================
@@ -494,16 +503,15 @@ handle_event(Req=#write{}, leader, State) ->
     Entry = new_entry(?OP_DATA,Req,State),
     State1 = append([Entry], State),
     {next_state, leader, State1};
-handle_event(Req=#swrite{expire_at = Timeout}, leader, State) ->
-    DeadLine = zraft_util:now_millisec()+Timeout,
-    Entry = new_entry(?OP_DATA,Req#swrite{expire_at = DeadLine},State),
+handle_event(Req=#swrite{}, leader, State) ->
+    Entry = new_entry(?OP_DATA,Req,State),
     State1 = append([Entry], State),
     {next_state, leader, State1};
 handle_event(#write{}, StateName, State) ->
     %%Ignore request
     {next_state, StateName, State};
 handle_event(#swrite{from = From,message_id = Seq}, StateName, State) ->
-    gen_fsm:reply(From,#swrite_error{sequence = Seq,leader = State#state.leader,error = not_leader}),
+    reply_caller(From,#swrite_error{sequence = Seq,leader = State#state.leader,error = not_leader}),
     {next_state, StateName, State};
 handle_event(_Event, StateName, State) ->
     {next_state, StateName, State}.
@@ -607,7 +615,7 @@ handle_sync_event(force_timeout, From, StateName, State) ->
                     {reply, false, StateName, State};
                 true ->
                     gen_fsm:cancel_timer(State#state.timer),
-                    gen_fsm:reply(From, true),
+                    reply_caller(From, true),
                     ?MODULE:StateName(timeout, State#state{timer = undefined})
             end
     end;
@@ -1303,13 +1311,13 @@ check_request_timeout(Req, Start, Timeout) ->
             true
     end.
 reset_request(#conf_change_requet{from = From}, Reason) ->
-    gen_fsm:reply(From, Reason);
+    reply_caller(From, Reason);
 reset_request(#read_request{args = [From | _]}, Reason) ->
-    gen_fsm:reply(From, Reason).
+    reply_caller(From, Reason).
 
 %%Query data from state FSM.
-read_request(#state{state_fsm = FSM}, From, Request) ->
-    zraft_fsm:cmd(FSM, #leader_read_request{from = From, request = Request}).
+read_request(#state{state_fsm = FSM}, From,Watcher,Request) ->
+    zraft_fsm:cmd(FSM, #read{from = From, request = Request,watch = Watcher}).
 
 %%Get last stable configuration
 get_conf_request(#state{log_state = LogState, config = Conf}, From) ->
@@ -1318,9 +1326,9 @@ get_conf_request(#state{log_state = LogState, config = Conf}, From) ->
     if
         ConfState == ?STABLE_CONF andalso ConfIndex =< Commit ->
             {_, #pconf{old_peers = Peers}} = ConfData,
-            gen_fsm:reply(From, {ok, {ConfIndex, Peers}});
+            reply_caller(From, {ok, {ConfIndex, Peers}});
         true ->
-            gen_fsm:reply(From, retry)
+            reply_caller(From, retry)
     end.
 
 accept_conf_request(State = #state{sessions = #sessions{conf = undefined}}) ->
@@ -1332,7 +1340,7 @@ accept_conf_request(State = #state{sessions = Sessions, log_state = LogState, co
         true ->
             if
                 Config#config.id > Req#conf_change_requet.index andalso Commit >= Config#config.id ->
-                    gen_fsm:reply(Req#conf_change_requet.from, ok),
+                    reply_caller(Req#conf_change_requet.from, ok),
                     State#state{sessions = Sessions#sessions{conf = undefined}};
                 true ->
                     State
@@ -1369,6 +1377,11 @@ new_entry(Type,Data,#state{log_state = LogState, current_term = Term}) ->
     #log_descr{last_index = I} = LogState,
     NextIndex = I + 1,
     #entry{term = Term, index = NextIndex, type = Type, data = Data,global_time = zraft_util:now_millisec()}.
+
+reply_caller(From, Msg) when is_pid(From) ->
+    From ! Msg;
+reply_caller(From, Msg) ->
+    gen_fsm:reply(From,Msg).
 
 -ifdef(TEST).
 setup_node() ->

@@ -61,6 +61,8 @@
     raft,
     raft_state = follower,
     sessions,
+    watchers,
+    monitors,
     ustate,
     back_end,
     last_index = 0,
@@ -109,10 +111,14 @@ delayed_init(State = #state{raft = Raft}) ->
     Dir = filename:join([?DATA_DIR, zraft_util:peer_name(PeerID), "snapshots"]),
     ok = zraft_util:make_dir(Dir),
     Seq = clean_dir(Dir),
+    WatchersTable =  ets:new(watcher_table_name(State),[bag, {write_concurrency, false}, {read_concurrency, false}]),
+    MonitorTable =  ets:new(monitor_table_name(State),[ordered_set, {write_concurrency, false}, {read_concurrency, false}]),
     State1 = install_snapshot(State#state{
         snapshot_count = Seq + 1,
         last = Seq,
-        dir = Dir
+        dir = Dir,
+        watchers = WatchersTable,
+        monitors = MonitorTable
     }),
     {noreply, State1}.
 
@@ -124,7 +130,7 @@ handle_call(_Request, _From, State) ->
 handle_cast(init, State) ->
     delayed_init(State);
 handle_cast({set_state, StateName}, State) ->
-    {noreply, State#state{raft_state = StateName}};
+    change_raft_state(StateName,State);
 handle_cast({copy_timeout, From, Index},
     State = #state{active_snapshot = #snapshoter{from = From, last_index = Index}}) ->
     State1 = discard_snapshot({error, hearbeat_fail}, State),
@@ -146,14 +152,8 @@ handle_cast(Req = #install_snapshot{data = hearbeat}, State) ->
     hearbeat_install_snapshot(Req, State);
 handle_cast(Req = #install_snapshot{data = finish}, State) ->
     finish_install_snapshot(Req, State);
-handle_cast(#leader_read_request{from = From, request = Query}, State = #state{back_end = BackEnd, ustate = UState}) ->
-    case BackEnd:query(Query, UState) of
-        {ok, Res} ->
-            reply_caller(From, {ok,Res});
-        {error, Err} ->
-            reply_caller(From, {error, Err})
-    end,
-    {noreply, State};
+handle_cast(Req = #read{}, State) ->
+    read(Req,State);
 handle_cast(_, State) ->
     {noreply, State}.
 
@@ -202,11 +202,80 @@ safe_rename(File, Dest) ->
     ok = file:rename(File, Dest).
 
 
+read(#read{from = From, request = Query,watch = false}, State = #state{back_end = BackEnd, ustate = UState}) ->
+    case BackEnd:query(Query, UState) of
+        {ok, Res} ->
+            reply_caller(From,Res);
+        {error, Err} ->
+            reply_caller(From, {error, Err})
+    end,
+    {noreply, State};
+read(#read{from = From, request = Query,watch = WatchRef},
+    State = #state{back_end = BackEnd, ustate = UState}) ->
+    {Caller,_} = From,
+    case BackEnd:query(Query,true,UState) of
+        {ok,WatchInfo,Res} ->
+            reply_caller(From,Res),
+            register_watchers(WatchInfo,Caller,WatchRef,State),
+            {noreply, State};
+        {error, Err} ->
+            reply_caller(From,{error, Err}),
+            {noreply, State}
+    end.
+
+register_watchers(WatchInfo,Caller,WatchRef,State = #state{watchers = WatchersTab})->
+    {Add,NewCount}=lists:foldl(fun(WatchKey,{Acc,Count})->
+        R = {{watch,WatchKey},Caller,WatchRef},
+        case ets:match(R) of
+            []->
+                {[R|Acc],Count+1};
+            _->
+                {Acc,Count}
+        end end,{[],0},WatchInfo),
+    if
+        NewCount==0->
+            ok;
+        true->
+            maybe_monitor(NewCount,Caller,State),
+            ets:insert(WatchersTab,Add)
+    end.
+
+trigger_watchers([],_)->
+    ok;
+trigger_watchers(Updates,#state{watchers = WatchersTab,monitors = MonTab})->
+    L1 = lists:foldl(fun(K,Acc)->
+        case ets:lookup(WatchersTab,{watch,K}) of
+            []->
+                Acc;
+            Watchers->
+                ets:delete(WatchersTab,{watch,K}),
+                lists:foldl(fun({_,Caller,WatchRef},Acc1)->
+                    [{Caller,WatchRef}|Acc1] end,Acc,Watchers)
+        end end,[],Updates),
+    L2 = lists:usort(L1),
+    lists:foreach(fun({Caller,WatchRef})->
+        Caller ! {WatchRef,'$zraft_update'} end,L2),
+    L3 = [{Caller,1}||{Caller,_}<-L2],
+    L4 = zraft_util:count_list(L3),
+    lists:foreach(fun({Caller,Count})->
+        maybe_reset_monitor(Caller,Count,MonTab) end,L4).
+
+maybe_reset_monitor(Caller,Count,MonTab)->
+    case ets:update_counter(MonTab,Caller,{3,-Count}) of
+        I when I<0->
+            exit({error,invalid_monitor_counter});
+        0->
+            [{_,MRef,_}] = ets:lookup(MonTab,Caller),
+            erlang:demonitor(MRef),
+            ets:delete(MonTab,Caller);
+        _->
+            ok
+    end.
+
 append([], State) ->
     {noreply, State};
 append(Entries, State) ->
     #state{
-        raft_state = RaftState,
         last_index = LastIndex,
         back_end = BackEnd,
         ustate = UState,
@@ -224,8 +293,7 @@ append(Entries, State) ->
                     Type == ?OP_DATA ->
                         case E#entry.data of
                             #write{data = Data, from = From} ->
-                                {Result, NewUState} = BackEnd:apply_data(Data, UStateAcc),
-                                reply_caller(RaftState, From, {ok,Result}),
+                                NewUState = apply_data(From,Data,BackEnd,UStateAcc,State),
                                 {NewUState, CountAcc + 1, EI, Time};
                             #swrite{} = Write ->
                                 NewUState = sapply(TimeAcc,Write, State),
@@ -246,34 +314,78 @@ append(Entries, State) ->
     end,
     maybe_take_snapshost(Count1, State#state{last_index = LastIndex1, ustate = UState1}).
 
-sapply(GlobalTime,#swrite{from = From, message_id = Seq, expire_at = ExpireTime, data = Data, acc_upto = AccUpTo}, State) ->
-    {FromPID, Ref} = From,
+%%no session. It's not nedeed to
+apply_data(From,Data,BackEnd,UState,State=#state{raft_state = RaftState})->
+    case BackEnd:apply_data(Data, UState) of
+        {R1,U1}->
+            Result = R1,
+            UState1 = U1;
+        {R1,Watchers,U1} when RaftState==leader->
+            trigger_watchers(Watchers,State),
+            UState1 = U1,
+            Result = R1;
+        {R1,_Watchers,U1}->
+            Result = R1,
+            UState1 = U1
+    end,
+    reply_caller(RaftState, From,Result),
+    UState1.
+sapply(GlobalTime,#swrite{from = From, message_id = Seq, timeout = Timeout, data = Data, acc_upto = AccUpTo}, State) ->
     #state{sessions = Sessions, ustate = UState, back_end = BackEnd} = State,
-    case ets:lookup(Sessions, {reply, FromPID, Ref, Seq}) of
-        [{_ReplyID,_,T1}] when T1 =< GlobalTime andalso GlobalTime>0->
-            %%we must expire result, other peers may already do it
-            {Result1, UState1} = BackEnd:apply_data(Data, UState),
-            true = ets:insert(Sessions, {{reply, FromPID, Ref, Seq}, Result1, ExpireTime});
+    case ets:lookup(Sessions, {reply,From, Seq}) of
         [{ReplyID, Result, _}] ->
             Result1 = Result,
             UState1 = UState,
-            ets:update_element(Sessions, ReplyID, {3, ExpireTime});
+            ets:update_element(Sessions, ReplyID, {3,GlobalTime+Timeout});
         [] ->
             {Result1, UState1} = BackEnd:apply_data(Data, UState),
-            true = ets:insert(Sessions, {{reply, FromPID, Ref, Seq}, Result1, ExpireTime})
+            true = ets:insert(Sessions, {{reply,From, Seq}, Result1,GlobalTime+Timeout})
     end,
     reply_caller(State#state.raft_state, From, #swrite_reply{data = Result1,sequence = Seq}),
     acc_session(From, AccUpTo, State),
     UState1.
 
+apply_data(true,From,Data,BackEnd,UState,State)->
+    case BackEnd:apply_data(Data,From,UState) of
+        {R,U}->
+            {R,U};
+        {R,ExpireData,U}->
+            register_temporary_data(From,ExpireData,State),
+            {R,U};
+        {R,ExpireData,UpdatedKeys,U}->
+            register_temporary_data(From,ExpireData,State),
+            trigger_watchers(UpdatedKeys,State),
+            {R,U}
+    end.
+
+register_temporary_data(From,Data,State)->
+    ets:insert(State#state.sessions,{{temporary,From},Data}),
+    maybe_monitor(1,From,State).
+
+maybe_monitor(0,From,State)->
+    ok;
+maybe_monitor(AddCount,From,#state{monitors = M}) when is_pid(From)->
+    case ets:lookup(M,From) of
+        []->
+            %%start monitor on client process
+            MRef = erlang:monitor(process,From),
+            %%register client process local
+            ets:insert(M,{From,MRef,AddCount});
+        _->
+            ets:update_counter(M,From,{3,AddCount})
+    end;
+maybe_monitor(AddCount,{From,_},State)->
+    maybe_monitor(AddCount,From,State).
+
+
 acc_session(_, 0, _) ->
     ok;
-acc_session({FromPID, Ref}, UpTo,#state{sessions = Sessions}) ->
-    Match = [{{{reply, FromPID, Ref, '$1'}, '_', '_'}, [{'=<', '$1', {const, UpTo}}], [true]}],
+acc_session(From, UpTo,#state{sessions = Sessions}) ->
+    Match = [{{{reply, From, '$1'}, '_', '_'}, [{'=<', '$1', {const, UpTo}}], [true]}],
     ets:select_delete(Sessions, Match).
 
 expire_reuqests(GlobalTime,#state{sessions = Sessions}) ->
-    DelMatch = [{{{reply, '$1', '_', '_'}, '_', '$3'}, [{'=<', '$3', {const, GlobalTime}}], [true]}],
+    DelMatch = [{{{reply, '_', '_'}, '_', '$3'}, [{'=<', '$3', {const, GlobalTime}}], [true]}],
     ets:select_delete(Sessions, DelMatch).
 
 clean_dir(Dir) ->
@@ -557,9 +669,15 @@ install_snapshot(State = #state{raft = Raft, ustate = Ustate, back_end = BackEnd
         sessions = Sessions
     }.
 
-session_table_name(#state{raft = Raft}) ->
+monitor_table_name(State) ->
+    state_table_name("monitors",State).
+watcher_table_name(State) ->
+    state_table_name("watchers",State).
+session_table_name(State) ->
+    state_table_name("sessions",State).
+state_table_name(Suffix,#state{raft = Raft}) ->
     {{Name, _}, _} = Raft,
-    list_to_atom(atom_to_list(Name) ++ "_sessions").
+    list_to_atom(atom_to_list(Name) ++ "_"++Suffix).
 
 truncate_log(State = #state{raft = Raft, last_dir = SnapshotDir}) ->
     case read_last_snapshot_info(SnapshotDir) of
@@ -584,8 +702,41 @@ reply_caller(leader, From, Msg) ->
 
 reply_caller(undeined, _) ->
     ok;
+
 reply_caller(From, Msg) ->
-    gen_fsm:reply(From, Msg).
+    zraft_consensus:reply_caller(From,msg(Msg)).
+
+msg(Msq=#swrite_reply{})->
+    Msq;
+msg(Msg=#swrite_error{})->
+    Msg;
+msg(Msg)->
+    {ok,Msg}.
+
+change_raft_state(NewRaftState,State = #state{raft_state = leader,watchers = W,monitors = M}) when NewRaftState/=leader->
+    AllWatchers = ets:tab2list(W),
+    lists:foreach(fun(O)->
+        case O of
+            {{watch,_WatchKey},Caller,WatchRef}->
+                Caller ! {WatchRef,'$zraft_not_leader'};
+            _->
+                ok
+        end end,AllWatchers),
+    ets:delete_all_objects(W),
+    AllMonitors = ets:tab2list(M),
+    lists:foreach(fun(O)->
+        case O of
+            {_,MRef,_}->
+                erlang:demonitor(MRef);
+            _->
+                ok
+        end end,AllMonitors),
+    ets:delete_all_objects(M),
+    {noreply,State#state{raft_state = NewRaftState}};
+
+change_raft_state(NewRaftState,State = #state{watchers = Watchers})->
+    ets:delete_all_objects(Watchers),
+    {noreply,State#state{raft_state = NewRaftState}}.
 
 
 -ifdef(TEST).
@@ -631,7 +782,7 @@ read_write() ->
         ?assertMatch(#state{last_index = 1, last_snapshot_index = 0, log_count = 1}, Stat),
         Ref = make_ref(),
         Me = {self(), Ref},
-        cmd(P, #leader_read_request{from = Me, request = 1}),
+        cmd(P, #read{from = Me, request = 1}),
         receive
             {Ref, Res} ->
                 ?assertMatch({ok,{ok, "1"}}, Res);
@@ -640,7 +791,7 @@ read_write() ->
         after 1000 ->
             ?assert(false)
         end,
-        cmd(P, #leader_read_request{from = Me, request = 2}),
+        cmd(P, #read{from = Me, request = 2}),
         receive
             {Ref, Res1} ->
                 ?assertMatch({ok, not_found}, Res1);
@@ -666,7 +817,7 @@ snapshot() ->
         end,
         Ref = make_ref(),
         Me = {self(), Ref},
-        cmd(P, #leader_read_request{from = Me, request = 1}),
+        cmd(P, #read{from = Me, request = 1}),
         receive
             {Ref, Res} ->
                 ?assertMatch({ok,not_found}, Res);
@@ -685,7 +836,7 @@ snapshot() ->
         after 2000 ->
             ?assert(false)
         end,
-        cmd(P, #leader_read_request{from = Me, request = 1}),
+        cmd(P, #read{from = Me, request = 1}),
         receive
             {Ref, Res1} ->
                 ?assertMatch({ok,{ok, "1"}}, Res1);
@@ -712,7 +863,7 @@ snapshot() ->
         after 2000 ->
             ?assert(false)
         end,
-        cmd(P1, #leader_read_request{from = Me, request = 10}),
+        cmd(P1, #read{from = Me, request = 10}),
         receive
             {Ref, Res3} ->
                 ?assertMatch({ok,{ok, "10"}}, Res3);
@@ -748,70 +899,58 @@ sessions(State0) ->
     {"test sessions", fun() ->
         Sessions = ets:new(sessions, [ordered_set, {write_concurrency, false}, {read_concurrency, false}]),
         State = State0#state{sessions = Sessions},
-        Ref1 = make_ref(),
-        Req1 = #swrite{data = 1, acc_upto = 0, expire_at = 10, from = {self(), Ref1}, message_id = 1},
+        Req1 = #swrite{data = 1, acc_upto = 0, timeout = 10, from = self(), message_id = 1},
         meck:expect(zraft_dict_backend, apply_data, fun(_, S1) ->
             {new_result1, S1} end),
         sapply(0,Req1, State),
         receive
             R1 ->
-                ?assertMatch({_,#swrite_reply{sequence = 1,data = new_result1}}, R1)
+                ?assertMatch(#swrite_reply{sequence = 1,data = new_result1}, R1)
         end,
-        E1 = ets:lookup(Sessions, {reply, self(), Ref1, 1}),
+        E1 = ets:lookup(Sessions, {reply, self(), 1}),
         ?assertMatch([{_, new_result1, 10}], E1),
 
-        Ref2 = make_ref(),
         meck:expect(zraft_dict_backend, apply_data, fun(_, S1) ->
             {new_result2, S1} end),
-        Req2 = #swrite{data = 1, acc_upto = 0, expire_at = 20, from = {self(), Ref2}, message_id = 1},
-        sapply(0,Req2, State),
+
+        sapply(0,Req1#swrite{timeout  = 11}, State),
         receive
             R2 ->
-                ?assertMatch({_, #swrite_reply{sequence = 1,data = new_result2}}, R2)
+                ?assertMatch(#swrite_reply{sequence = 1,data = new_result1}, R2)
         end,
-        E2 = ets:lookup(Sessions, {reply, self(), Ref2, 1}),
-        ?assertMatch([{_, new_result2, 20}], E2),
+        E2 = ets:lookup(Sessions, {reply, self(), 1}),
+        ?assertMatch([{_, new_result1, 11}], E2),
 
-        sapply(0,Req1#swrite{expire_at = 11}, State),
+        Req2 = #swrite{data = 1, acc_upto = 1, timeout = 30, from = self(), message_id = 2},
+        sapply(0,Req2, State),
         receive
             R3 ->
-                ?assertMatch({_, #swrite_reply{sequence = 1,data = new_result1}}, R3)
+                ?assertMatch(#swrite_reply{sequence = 2,data = new_result2}, R3)
         end,
-        E3 = ets:lookup(Sessions, {reply, self(), Ref1, 1}),
-        ?assertMatch([{_, new_result1, 11}], E3),
+        E3 = ets:lookup(Sessions, {reply, self(), 2}),
+        ?assertMatch([{_, new_result2, 30}], E3),
 
-        Req3 = #swrite{data = 1, acc_upto = 1, expire_at = 30, from = {self(), Ref1}, message_id = 2},
+        E4 = ets:lookup(Sessions, {reply, self(), 1}),
+        ?assertMatch([], E4),
+
+        expire_reuqests(20, State),
+        E5 = ets:lookup(Sessions, {reply, self(), 2}),
+        ?assertMatch([{_, new_result2, 30}], E5),
+
+        Req3 = #swrite{data = 1, acc_upto = 2, timeout = 30, from = self(), message_id = 2},
         sapply(0,Req3, State),
         receive
             R4 ->
-                ?assertMatch({_, #swrite_reply{sequence = 2,data = new_result2}}, R4)
+                ?assertMatch(#swrite_reply{sequence = 2,data = new_result2}, R4)
         end,
-        E4 = ets:lookup(Sessions, {reply, self(), Ref1, 2}),
-        ?assertMatch([{_, new_result2, 30}], E4),
-
-        E5 = ets:lookup(Sessions, {reply, self(), Ref1, 1}),
-        ?assertMatch([], E5),
-
-        expire_reuqests(20, State),
-        E6 = ets:lookup(Sessions, {reply, self(), Ref1, 2}),
-        ?assertMatch([{_, new_result2, 30}], E6),
-        E7 = ets:lookup(Sessions, {reply, self(), Ref2, 1}),
-        ?assertMatch([], E7),
-
-        Req4 = #swrite{data = 1, acc_upto = 2, expire_at = 30, from = {self(), Ref1}, message_id = 2},
-        sapply(0,Req4, State),
-        receive
-            R5 ->
-                ?assertMatch({_, #swrite_reply{sequence = 2,data = new_result2}}, R5)
-        end,
-        E8 = ets:lookup(Sessions, {reply, self(), Ref1, 2}),
+        E8 = ets:lookup(Sessions, {reply, self(), 2}),
         ?assertMatch([], E8),
-        sapply(0,Req3, State),
+        sapply(0,Req2, State),
         receive
             R6 ->
-                ?assertMatch({_, #swrite_reply{sequence = 2,data = new_result2}}, R6)
+                ?assertMatch(#swrite_reply{sequence = 2,data = new_result2}, R6)
         end,
-        E9 = ets:lookup(Sessions, {reply, self(), Ref1, 2}),
+        E9 = ets:lookup(Sessions, {reply, self(), 2}),
         ?assertMatch([{_, new_result2, 30}], E9),
         expire_reuqests(30,State),
         Vals1 = ets:tab2list(Sessions),

@@ -27,16 +27,34 @@
 -type read_cmd()::term().
 -type write_cmd()::term().
 -type snapshot_fun()::fun().
+-type expire_action()::term().
+-type watch()::true|false.
+-type watchkey()::term().
 
 
 %% init backend FSM
--callback init(zraft_consensus:peer_id()) -> state().
+-callback init(zraft_consensus:peer_id()) ->
+    state().
 
 %% read/query data from FSM
--callback query(read_cmd(),state()) -> {ok,term()}.
+-callback query(read_cmd(),state()) ->
+    {ok,term()} | {error,term()}.
+%% read/query data from FSM
+-callback query(read_cmd(),watch(),state()) ->
+    {ok,list(watchkey()),term()} | {error,watch_not_supported} | {error,term()}.
+
 
 %% write data to FSM
--callback apply_data(write_cmd(),state()) -> {term(),state()}.
+-callback apply_data(write_cmd(),state()) -> {term(),state()} | {term(),list(watchkey()),state()}.
+
+%% write data to FSM
+-callback apply_data(write_cmd(),zraft_consensus:csession(),state()) ->
+    {term(),state()} |
+    {term(),expire_action(),state()} |
+    {term(),expire_action(),list(watchkey()),state()}.
+
+-callback expire_session(expire_action(),zraft_consensus:csession(),state())->
+    {ok,state()}.
 
 %% Prepare FSM to take snapshot asycn if it's possible otherwice return function to take snapshot immediatly
 -callback snapshot(state())->{sync,snapshot_fun()} | {async,snapshot_fun()}.
