@@ -35,7 +35,8 @@
     value :: term(),
     counter = 0 :: non_neg_integer(),
     mode = object :: object | group,
-    group = [] :: [term()] | []
+    group = [] :: [term()] | [],
+    sessionid :: term() %% reserved for sessioned keys.
 }).
 
 -record(find_keys_acc, {
