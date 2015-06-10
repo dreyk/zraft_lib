@@ -34,7 +34,13 @@
     key :: term(),
     value :: term(),
     counter = 0 :: non_neg_integer(),
-    mode = object:: object | group
+    mode = object :: object | group,
+    group = [] :: [term()] | []
+}).
+
+-record(find_keys_acc, {
+    keys = [],
+    group_keys = [] :: orddict:orddict()
 }).
 
 -opaque state() :: #state{}.
@@ -65,11 +71,11 @@ query({get, Key}, #state{ets_ref = Tab}) ->
 
 %% Pattern is match pattern
 query({list, Pattern}, #state{ets_ref = Tab}) ->
-    ActualPattern = #item{key = Pattern},
+    ActualPattern = #item{_='_', key = Pattern},
     {ok, lists:map(
         fun(#item{key = Key, value = Value}) ->
             {Key, Value}
-        end, ets:match(Tab, ActualPattern))
+        end, ets:match_object(Tab, ActualPattern))
     };
 
 query({fold, SelectFun, Acc0}, #state{ets_ref = Tab}) when is_function(SelectFun) ->
@@ -164,9 +170,16 @@ apply_data_unsafe({put_new, Data}, State = #state{ets_ref = Tab}) ->
     end,
     {Result, State};
 apply_data_unsafe({delete, Keys}, State = #state{ets_ref = Tab}) when is_list(Keys) ->
-    AllKeys = find_keys_recursive(Tab, Keys, []),
+    #find_keys_acc{keys = AllKeys, group_keys = AllGroups} = find_keys_recursive(Tab, Keys, #find_keys_acc{}),
     lists:foreach(fun(Key) -> ets:delete(Tab, Key) end, AllKeys),
-    {{ok, AllKeys}, State};
+    AcrtiveGroups = orddict:filter(fun(K, _V) -> not lists:member(K, AllKeys) end, AllGroups),
+    orddict:map(
+        fun(K, RemovedChildren) ->
+            #item{mode = group, value = Children} = I = hd(ets:lookup(Tab, K)),
+            NewI = I#item{value = Children -- RemovedChildren},
+            true = ets:insert(Tab, NewI)
+        end, AcrtiveGroups),
+    {{ok, AllKeys ++ orddict:fetch_keys(AcrtiveGroups)}, State};
 apply_data_unsafe({increment, Key, Incr}, State = #state{ets_ref = Tab}) ->
     NewVal = ets:update_counter(Tab, Key, Incr),
     {NewVal, State};
@@ -176,36 +189,42 @@ apply_data_unsafe({append, GroupKVs}, State = #state{ets_ref = Tab}) ->
         fun(GroupKey) ->
             append_one(GroupKey, Tab)
         end, DataList),
-    {{ok, AllKeys}, State};
+    {{ok, lists:usort(AllKeys)}, State};
 apply_data_unsafe(_, State) ->
     {{error, invalid_request}, State}.
 
 append_one({GroupKey, Value}, Tab) ->
-    GroupItem = #item{counter = NewCnt} = case ets:lookup(Tab, GroupKey) of
+    GroupItem = #item{counter = NewCnt, value = CurrChildrenKeys} = case ets:lookup(Tab, GroupKey) of
        [#item{counter = Cnt, mode = group} = I] ->
            I#item{counter = Cnt + 1};
        [#item{counter = Cnt, mode = object} = I] ->
            I#item{counter = Cnt + 1, value = [], mode = group};
        [] ->
-           #item{mode = group, value = []}
+           #item{key = GroupKey, mode = group, value = []}
     end,
     NewKey = {GroupKey, NewCnt},
-    NewItem = #item{key = NewKey, value = Value},
-    true = ets:insert(Tab, [GroupItem, NewItem]),
+    NewItem = #item{key = NewKey, value = Value, group = [GroupKey]},
+    true = ets:insert(Tab, [GroupItem#item{value = [NewKey | CurrChildrenKeys]}, NewItem]),
     [GroupKey, NewKey].
 
 find_keys_recursive(Tab, Keys, Acc0) ->
     lists:foldl(
-        fun(Key, List) ->
+        fun(Key, Acc = #find_keys_acc{keys = AccKeys, group_keys = GroupKeys}) ->
             case ets:lookup(Tab, Key) of
-                [#item{key = Key, mode = object}] ->
-                    [Key | List];
-                [#item{key = Key, mode = group, value = KeyList}] ->
-                    find_keys_recursive(Tab, KeyList, [Key | List]);
+                [#item{key = Key, mode = object, group = Group}] ->
+                    #find_keys_acc{keys = [Key | AccKeys], group_keys = add_if_grouped(Group, Key, GroupKeys)};
+                [#item{key = Key, mode = group, value = KeyList, group = Group}] ->
+                    NewAcc = #find_keys_acc{keys = [Key | AccKeys], group_keys = add_if_grouped(Group, Key, GroupKeys)},
+                    find_keys_recursive(Tab, KeyList, NewAcc);
                 [] ->
-                    List
+                    Acc
             end
         end, Acc0, Keys).
+
+add_if_grouped([], _Key, GroupKeys) ->
+    GroupKeys;
+add_if_grouped([Group], Key, GroupKeys) ->
+    orddict:append(Group, Key, GroupKeys).
 
 make_items(DataList) ->
     lists:map(fun({K, V}) -> #item{key = K, value = V} end, DataList).
@@ -234,6 +253,7 @@ ets_backend_test_() ->
                 test_empty_get(Ets),
                 test_put(Ets),
                 test_get(Ets),
+                test_append(Ets),
                 test_snapshot(Ets)
             ]
         end
@@ -259,22 +279,22 @@ test_empty_get(Ets) ->
 test_put(Ets) ->
     [
         fun() ->
-            ?assertMatch({true, Ets}, apply_data({put, {["/", "1"], "v1"}}, Ets)),
-            ?assertMatch({false, Ets}, apply_data({append, {["/", "1"], "v1"}}, Ets)),
-            ?assertMatch({true, Ets}, apply_data({delete, [["/", "1"]]}, Ets)),
-            ?assertMatch({true, Ets}, apply_data({append, {["/", "1"], "v1"}}, Ets)),
-            ?assertMatch({true, Ets}, apply_data({put, [
+            ?assertMatch({{ok, [["/", "1"]]}, Ets}, apply_data({put, {["/", "1"], "v1"}}, Ets)),
+            ?assertMatch({{error,overwrite_request}, Ets}, apply_data({put_new, {["/", "1"], "v1"}}, Ets)),
+            ?assertMatch({{ok, [["/", "1"]]}, Ets}, apply_data({delete, [["/", "1"]]}, Ets)),
+            ?assertMatch({{ok, [["/", "1"]]}, Ets}, apply_data({put_new, {["/", "1"], "v1"}}, Ets)),
+            ?assertMatch({{ok, [ ["/", "1"], ["/", "2", "3"]] }, Ets}, apply_data({put, [
                 {["/", "1"], "v1"},
                 {["/", "2", "3"], "v2"}
             ]}, Ets)),
-            ?assertMatch({false, Ets}, apply_data({append, [
+            ?assertMatch({{error,overwrite_request}, Ets}, apply_data({put_new, [
                 {["/", "1"], "v1"},
                 {["/", "3"], "v3"}
             ]}, Ets)),
             ?assertMatch({{error, invalid_request}, Ets}, apply_data({replace, {["/", "4"], "v4"}}, Ets))
         end,
         fun() ->
-            ?assertMatch({true, Ets}, apply_data({put, {"2", 1}}, Ets)),
+            ?assertMatch({{ok, ["2"]}, Ets}, apply_data({put, {"2", 1}}, Ets)),
             ?assertMatch({13, Ets}, apply_data({increment, "2", 12}, Ets)),
             ?assertMatch({-5, Ets}, apply_data({increment, "2", -18}, Ets)),
             ?assertMatch({{error, invalid_request}, Ets}, apply_data({increment, "21", -17}, Ets))
@@ -285,14 +305,20 @@ test_get(Ets) ->
     [
         ?_assertMatch({ok, {["/", "1"], "v1"}}, query({get, ["/", "1"]}, Ets)),
         ?_assertMatch({ok, [
-            [["1"], "v1"],
-            [["2", "3"], "v2"]
-        ]}, query({list, {["/" | '$1'], '$2'}}, Ets)),
-        ?_assertMatch({ok, [
             {["/", "1"], "v1"},
             {["/", "2", "3"], "v2"}
-        ]}, query({list, [{{['$1' | '$2'], '$3'}, [{'=:=', '$1', "/"}], [{{['$1' | '$2'], '$3'}}]}]}, Ets))
+        ]}, query({list, ["/" | '$1']}, Ets))
     ].
+
+test_append(Ets) ->
+    fun() ->
+        ?assertMatch({{ok, [{"3", 0}, "3"]}, Ets}, apply_data({append, {"3", "v3"}}, Ets)),
+        ?assertMatch({{ok, [{"3", 1}, {"3", 2}, "3"]}, Ets}, apply_data({append, [{"3", "v32"}, {"3", "v33"}]}, Ets)),
+
+        ?assertMatch({ok, {"3", [{"3", 2}, {"3", 1}, {"3", 0}]}}, query({get, "3"}, Ets)),
+        ?assertMatch({ok, {{"3", 2}, "v33"}}, query({get, {"3", 2}}, Ets)),
+        ?assertMatch({{ok, [{"3", 2}, "3"]}, Ets}, apply_data({delete, [{"3", 2}]}, Ets))
+    end.
 
 test_snapshot(Ets = #state{ets_ref = Tab}) ->
     [
