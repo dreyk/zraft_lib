@@ -317,7 +317,11 @@ test_append(Ets) ->
 
         ?assertMatch({ok, {"3", [{"3", 2}, {"3", 1}, {"3", 0}]}}, query({get, "3"}, Ets)),
         ?assertMatch({ok, {{"3", 2}, "v33"}}, query({get, {"3", 2}}, Ets)),
-        ?assertMatch({{ok, [{"3", 2}, "3"]}, Ets}, apply_data({delete, [{"3", 2}]}, Ets))
+        ?assertMatch({{ok, [{"3", 2}, "3"]}, Ets}, apply_data({delete, [{"3", 2}]}, Ets)),
+        ?assertMatch({ok, {"3", [{"3", 1}, {"3", 0}]}}, query({get, "3"}, Ets)),
+        ?assertMatch({ok, not_found}, query({get, {"3", 2}}, Ets)),
+        ?assertMatch({{ok, [{"3", 3}, "3"]}, Ets}, apply_data({append, {"3", "v4"}}, Ets)),
+        ?assertMatch({ok, {"3", [{"3", 3}, {"3", 1}, {"3", 0}]}}, query({get, "3"}, Ets))
     end.
 
 test_snapshot(Ets = #state{ets_ref = Tab}) ->
