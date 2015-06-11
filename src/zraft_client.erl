@@ -313,7 +313,7 @@ execute_once(Session, Data, Start, Timeout) ->
 
 execute_once(Session, Seq, SWrite, Start, Timeout) ->
     Leader = current_session_leader(Session),
-    MRef = zraft_consensus:send_swrite(Leader, SWrite#swrite{timeout = Timeout}),
+    MRef = zraft_consensus:send_swrite(Leader, SWrite),
     Next = receive
                #swrite_error{sequence = Seq, error = not_leader, leader = NewLeader} when NewLeader /= undefined ->
                    {continue, Session#light_session{leader = NewLeader}};

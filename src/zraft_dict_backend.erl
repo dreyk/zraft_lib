@@ -22,7 +22,16 @@
 
 -behaviour(zraft_backend).
 
--export([init/1,query/2,apply_data/2,snapshot/1,snapshot_done/1,snapshot_failed/2,install_snapshot/2]).
+-export([
+    init/1,
+    query/2,
+    apply_data/2,
+    apply_data/3,
+    snapshot/1,
+    snapshot_done/1,
+    snapshot_failed/2,
+    install_snapshot/2,
+    expire_session/2]).
 
 
 %% @doc init backend FSM
@@ -48,6 +57,12 @@ apply_data(List,Dict) when is_list(List)->
     Dict1 = lists:foldl(fun({K,V},Acc)->
         dict:store(K,V,Acc) end,Dict,List),
     {ok,Dict1}.
+
+apply_data(_,_,Dict)->
+    {{error,session_not_supported},Dict}.
+
+expire_session(_,Dict)->
+    {ok,Dict}.
 
 %% @doc Prepare FSM to take snapshot asycn if it's possible otherwice return function to take snapshot immediatly
 snapshot(Dict)->

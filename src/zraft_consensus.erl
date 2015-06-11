@@ -172,11 +172,9 @@ write(PeerID, Data, Timeout) ->
     Req = #write{data = Data},
     gen_fsm:sync_send_all_state_event(PeerID, Req, Timeout).
 
--spec send_swrite(peer_id(),session_write())->reference().
-send_swrite(PeerID,SWrite)->
-    MRef = erlang:monitor(process,PeerID),
-    gen_fsm:send_all_state_event(PeerID,SWrite),
-    MRef.
+-spec send_swrite(peer_id()|from_peer_addr(),session_write())->ok.
+send_swrite(Peer,SWrite)->
+    send_all_state_event(Peer,SWrite).
 
 %% @doc Async write data to user backend
 -spec write_async(peer_id(), term()) -> ok.
@@ -1365,8 +1363,11 @@ send_event({_, P}, Event) ->
 
 send_all_state_event(P, Event) when is_pid(P) ->
     gen_fsm:send_all_state_event(P, Event);
-send_all_state_event({_, P}, Event) ->
-    gen_fsm:send_all_state_event(P, Event).
+send_all_state_event({_, P}, Event) when is_pid(P)->
+    gen_fsm:send_all_state_event(P, Event);
+send_all_state_event(Peer, Event)->
+    gen_fsm:send_all_state_event(Peer, Event).
+
 
 print_id(#state{id = ID}) ->
     ID;
