@@ -173,14 +173,14 @@ apply_data_unsafe({put_new, Data}, State = #state{ets_ref = Tab}) ->
 apply_data_unsafe({delete, Keys}, State = #state{ets_ref = Tab}) when is_list(Keys) ->
     #find_keys_acc{keys = AllKeys, group_keys = AllGroups} = find_keys_recursive(Tab, Keys, #find_keys_acc{}),
     lists:foreach(fun(Key) -> ets:delete(Tab, Key) end, AllKeys),
-    AcrtiveGroups = orddict:filter(fun(K, _V) -> not lists:member(K, AllKeys) end, AllGroups),
+    ActiveGroups = orddict:filter(fun(K, _V) -> not lists:member(K, AllKeys) end, AllGroups),
     orddict:map(
         fun(K, RemovedChildren) ->
             #item{mode = group, value = Children} = I = hd(ets:lookup(Tab, K)),
             NewI = I#item{value = Children -- RemovedChildren},
             true = ets:insert(Tab, NewI)
-        end, AcrtiveGroups),
-    {{ok, AllKeys ++ orddict:fetch_keys(AcrtiveGroups)}, State};
+        end, ActiveGroups),
+    {{ok, AllKeys ++ orddict:fetch_keys(ActiveGroups)}, State};
 apply_data_unsafe({increment, Key, Incr}, State = #state{ets_ref = Tab}) ->
     NewVal = ets:update_counter(Tab, Key, Incr),
     {NewVal, State};
