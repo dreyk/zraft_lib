@@ -57,7 +57,6 @@
 -define(WARNING(State, S, As), ?MWARNING("~p: " ++ S, [print_id(State) | As])).
 -define(WARNING(State, S), ?MWARNING("~p: " ++ S, [print_id(State)])).
 
--define(DISCONNECT_MSG, disconnected).
 
 -record(state, {
     raft,
@@ -266,6 +265,14 @@ trigger_watchers(Updates, #state{watchers = WatchersTab}) ->
     lists:foreach(fun({Caller, WatchRef}) ->
         Caller ! #swatch_trigger{ref = WatchRef} end, L2).
 
+trigger_all_watchers(#state{watchers = WatchersTab}) ->
+    All = ets:tab2list(WatchersTab),
+    L1 = lists:foldl(fun({_, Caller, WatchRef}, Acc) ->
+        [{Caller, WatchRef} | Acc] end, [], All),
+    L2 = lists:usort(L1),
+    lists:foreach(fun({Caller, WatchRef}) ->
+        Caller ! #swatch_trigger{ref = WatchRef} end, L2).
+
 append([], State) ->
     {noreply, State};
 append(Entries, State) ->
@@ -333,6 +340,7 @@ apply_data(GlobalTime, Req = #swrite{}, BackEnd, UState, State) ->
                 [{_, _, ExpiredAt, _}] when ExpiredAt =< GlobalTime ->
                     %%expire session and create new
                     UState1 = expire_session_data(From, BackEnd, UState, State),
+                    reply_caller(RaftState, From, #swrite_reply{sequence = MsgID, data = ok}),
                     create_new_session(From, GlobalTime, Data, State),
                     UState1;
                 [] ->
@@ -786,6 +794,7 @@ change_raft_state(RaftState, State = #state{raft_state = RaftState}) ->
     {noreply, State};
 change_raft_state(NewRaftState, State = #state{raft_state = leader, watchers = W, monitors = M})
     when NewRaftState /= leader ->
+    trigger_all_watchers(State),
     ets:delete_all_objects(W),
     AllMonitors = ets:tab2list(M),
     lists:foreach(fun(O) ->

@@ -47,6 +47,7 @@
 -define(CLIENT_CONNECT,'$zraftc_connect').
 -define(CLIENT_CLOSE,'$zraftc_close').
 -define(EXPIRE_SESSION,'$zraft_expire').
+-define(DISCONNECT_MSG, disconnected).
 
 -record(snapshot_info,{index=0,term=0,conf_index=0,conf=?BLANK_CONF}).
 

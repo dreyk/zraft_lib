@@ -24,7 +24,6 @@
 -export([
     query/3,
     write/3,
-    write_once/3,
     get_conf/1,
     get_conf/2,
     light_session/1,
@@ -42,15 +41,12 @@
 -define(TIMEOUT, 5000).
 -define(CREATE_TIMEOUT, 5000).
 
--record(light_session, {peers, leader, peers_tmp = []}).
-
--type light_session() :: #light_session{}.
 
 %%%===================================================================
 %%% Read/Write
 %%%===================================================================
 
--spec light_session(Conf) -> light_session() | {error, Reason} when
+-spec light_session(Conf) -> zraft_session_obj:light_session() | {error, Reason} when
     Conf :: list(zraft_consensus:peer_id())|zraft_consensus:peer_id(),
     Reason :: no_peers|term().
 %% @doc Create light session for read/write operations
@@ -64,24 +60,25 @@
 %%
 %% If Conf is empty list then  {error,no_peers} will be returned.
 %% @end
-light_session([F | _] = Peers) ->
-    #light_session{peers = Peers, leader = F};
+light_session([_F | _] = Peers) ->
+    zraft_session_obj:create(Peers);
 light_session([]) ->
     {error, no_peers};
 light_session(PeerID) ->
     case get_conf(PeerID) of
         {ok, {Leader, Peers}} ->
-            #light_session{peers = Peers, leader = Leader};
+            S1 = zraft_session_obj:create(Peers),
+            zraft_session_obj:set_leader(Leader,S1);
         Error ->
             Error
     end.
 
 -spec query(Raft, Query, Timeout) -> {Result, NewRaftConf}|RuntimeError when
-    Raft :: light_session()|zraft_consensus:peer_id(),
+    Raft :: zraft_session_obj:light_session()|zraft_consensus:peer_id(),
     Query :: term(),
     Timeout :: timeout(),
     Result :: term(),
-    NewRaftConf :: light_session()|zraft_consensus:peer_id(),
+    NewRaftConf :: zraft_session_obj:light_session()|zraft_consensus:peer_id(),
     RuntimeError :: {error, timeout}|{error, noproc}.
 %% @doc Read data from state machine.
 %%
@@ -98,11 +95,11 @@ query(Raft, Query, Timeout) ->
     peer_execute(Raft, Fun, Timeout).
 
 -spec write(Raft, Data, Timeout) -> {Result, NewRaftConf}|RuntimeError when
-    Raft :: light_session()|zraft_consensus:peer_id(),
+    Raft :: zraft_session_obj:light_session()|zraft_consensus:peer_id(),
     Data :: term(),
     Timeout :: timeout(),
     Result :: term(),
-    NewRaftConf :: light_session()|zraft_consensus:peer_id(),
+    NewRaftConf :: zraft_session_obj:light_session()|zraft_consensus:peer_id(),
     RuntimeError :: {error, timeout}|{error, noproc}.
 %% @doc Write data to state machine.
 %%
@@ -117,18 +114,6 @@ query(Raft, Query, Timeout) ->
 write(Raft, Data, Timeout) ->
     Fun = fun(ID) -> zraft_consensus:write(ID, Data, Timeout) end,
     peer_execute(Raft, Fun, Timeout).
-
-%% @doc Write data to state machine.
-%%
-%% It guarantees that data will be applied to state machine exacly once.
-%% If Raft is single peer than it will try to write data from it. Request will be redirected to leader
-%% if that peer is follower or canditate. If peer is unreachable or is going down request will fail with error {error,noproc}.
-%%
-%% If Raft is light session object and current leader is going down it will retry requet to other peer and so on
-%% until receive respose or timeout.
--spec write_once(light_session(),term(),timeout())->{term(),light_session()}|{error,timeout()}.
-write_once(Session,Data,Timeout)->
-    execute_once(Session,Data,os:timestamp(),Timeout).
 
 
 %%%===================================================================
@@ -264,8 +249,8 @@ create(FirstPeer, AllPeers, UseBackend) ->
 
 peer_execute(Raft, Fun, Timeout) ->
     Start = os:timestamp(),
-    case Raft of
-        #light_session{} ->
+    case zraft_session_obj:is_session(Raft) of
+        true ->
             peer_execute_sessions(Raft, Fun, Start, Timeout);
         _ ->
             peer_execute(Raft, Fun, Start, Timeout)
@@ -284,16 +269,20 @@ peer_execute(PeerID, Fun, Start, Timeout) ->
         Else ->
             format_error(Else)
     end.
-peer_execute_sessions(Session = #light_session{}, Fun, Start, Timeout) ->
-    Leader = current_session_leader(Session),
+peer_execute_sessions(Session, Fun, Start, Timeout) ->
+    Leader = zraft_session_obj:leader(Session),
     Next = case catch Fun(Leader) of
         {ok, Result} ->
-            {Result, Session#light_session{leader = Leader}};
+            {Result,Session};
         {leader, NewLeader} when NewLeader /= undefined ->
-            {continue,Session#light_session{leader = NewLeader}};
+            {continue,zraft_session_obj:set_leader(NewLeader,Session)};
         _Else ->
-            Session1 = next_leader(Session, Leader),
-            {continue,Session1}
+            case zraft_session_obj:fail(Session) of
+                {error,Err}->
+                    {error,Err};
+                Session1->
+                    {continue,Session1}
+            end
     end,
     case Next of
         {continue, NextSession} ->
@@ -307,59 +296,6 @@ peer_execute_sessions(Session = #light_session{}, Fun, Start, Timeout) ->
             Else
     end.
 
-execute_once(Session, Data, Start, Timeout) ->
-    SWrite = #swrite{data = Data, acc_upto = 0, from = self(), message_id = 1},
-    execute_once(Session,1, SWrite, Start, Timeout).
-
-execute_once(Session, Seq, SWrite, Start, Timeout) ->
-    Leader = current_session_leader(Session),
-    MRef = zraft_consensus:send_swrite(Leader, SWrite),
-    Next = receive
-               #swrite_error{sequence = Seq, error = not_leader, leader = NewLeader} when NewLeader /= undefined ->
-                   {continue, Session#light_session{leader = NewLeader}};
-               #swrite_error{sequence = Seq}->
-                   Session1 = next_leader(Session, Leader),
-                   {continue, Session1};
-               #swrite_reply{sequence = Seq, data = Result} ->
-                   {Result, Session#light_session{leader = Leader}};
-               {'DOWN', MRef, process, _, _Error} ->
-                   Session1 = next_leader(Session, Leader),
-                   {continue, Session1}
-           after Timeout ->
-               {error, timeout}
-           end,
-    erlang:demonitor(MRef,[flush]),
-    case Next of
-        {continue, NextSession} ->
-            case zraft_util:is_expired(Start, Timeout) of
-                true ->
-                    {error, timeout};
-                {false,_Timeout1} ->
-                    execute_once(NextSession, Seq, SWrite,Start, Timeout)
-            end;
-        Else ->
-            Else
-    end.
-
-current_session_leader(#light_session{leader = undefined, peers = [L | _]}) ->
-    L;
-current_session_leader(#light_session{leader = undefined, peers_tmp = Tmp}) ->
-    [L | _] = lists:reverse(Tmp),
-    L;
-current_session_leader(#light_session{leader = L}) ->
-    L.
-
-next_leader(Session = #light_session{peers = Peers, peers_tmp = Tmp}, Except) ->
-    {Next, Peers1, Tmp1} = next_leader1(Peers, Except, Tmp),
-    Session#light_session{leader = Next, peers = Peers1, peers_tmp = Tmp1}.
-next_leader1([P], _Expept, []) ->
-    {P, [P], []};
-next_leader1([P | T], Except, Back) when P == Except ->
-    next_leader1(T, Except, [P | Back]);
-next_leader1([P | T], _Exept, Back) ->
-    {P, T, [P | Back]};
-next_leader1([], Exept, Back) ->
-    next_leader1(lists:reverse(Back), Exept, []).
 
 
 %% @private
@@ -375,17 +311,17 @@ wait_stable_conf(Peer, Start, Timeout) ->
             case catch zraft_consensus:get_conf(Peer, Timeout) of
                 {leader, undefined} ->
                     timer:sleep(zraft_consensus:get_election_timeout()),
-                    wait_stable_conf(Peer, os:timestamp(), Timeout);
+                    wait_stable_conf(Peer,Start, Timeout);
                 {leader, NewLeader} ->
-                    wait_stable_conf(NewLeader, os:timestamp(), Timeout);
+                    wait_stable_conf(NewLeader,Start, Timeout);
                 {ok, {0, _}} ->
                     timer:sleep(zraft_consensus:get_election_timeout()),
-                    wait_stable_conf(Peer,os:timestamp(), Timeout);
+                    wait_stable_conf(Peer,Start, Timeout);
                 {ok, {Index, Peers}} ->
                     {ok, {Peer, Index, Peers}};
                 retry ->
                     timer:sleep(zraft_consensus:get_election_timeout()),
-                    wait_stable_conf(Peer,os:timestamp(), Timeout);
+                    wait_stable_conf(Peer,Start, Timeout);
                 Error ->
                     format_error(Error)
             end
@@ -398,16 +334,3 @@ format_error({error, _} = Error) ->
     Error;
 format_error(Error) ->
     {error, Error}.
-
--ifdef(TEST).
-
-next_leader_test() ->
-    S1 = light_session([1, 2, 3]),
-    S2 = next_leader(S1, 1),
-    ?assertEqual(#light_session{peers = [3], leader = 2, peers_tmp = [2, 1]}, S2),
-    S3 = next_leader(S2, 3),
-    ?assertEqual(#light_session{peers = [2, 3], leader = 1, peers_tmp = [1]}, S3),
-    S4 = next_leader(S3, 0),
-    ?assertEqual(#light_session{peers = [3], leader = 2, peers_tmp = [2, 1]}, S4).
-
--endif.

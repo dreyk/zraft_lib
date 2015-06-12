@@ -73,6 +73,8 @@
     get_conf_request/2,
     query/3,
     query/4,
+    async_query/4,
+    async_query/5,
     query_local/3,
     get_conf/2,
     write/3,
@@ -117,7 +119,8 @@
     election_timeout,
     state_fsm,
     quorum_counter,
-    sessions = #sessions{}}).
+    sessions = #sessions{}
+}).
 
 -record(config, {id, state, conf, old_peers, new_peers}).
 -record(read_request, {function, args, start_time, timeout}).
@@ -154,17 +157,22 @@ query_local(PeerID, Query, Timeout) ->
 %% @doc Query data form user backend.
 -spec query(peer_id(), term(), timeout()) -> {ok, term()}|{leader, peer_id()}|{error, timeout}.
 query(PeerID, Query, Timeout) ->
-    send_leader_request(PeerID, read_request, [false,Query], Timeout).
+    sync_leader_read_request(PeerID, read_request, [false,Query], Timeout).
 
 %% @doc Query data form user backend and set watch for future change.
 -spec query(peer_id(),term(),term(), timeout()) -> {ok, term()}|{leader, peer_id()}|{error, timeout}.
 query(PeerID,WatchRef,Query, Timeout) ->
-    send_leader_request(PeerID, read_request, [WatchRef,Query], Timeout).
+    sync_leader_read_request(PeerID, read_request, [WatchRef,Query], Timeout).
+
+async_query(PeerID,From,Query,Timeout)->
+    async_leader_read_request(PeerID,From,read_request, [false,Query], Timeout).
+async_query(PeerID,From,WatchRef,Query,Timeout)->
+    async_leader_read_request(PeerID,From,read_request, [WatchRef,Query], Timeout).
 
 %% @doc Read last stable quorum configuration
 -spec get_conf(peer_id(), timeout()) -> {ok, term()}|{leader, peer_id()}|retry|{error, term()}.
 get_conf(PeerID, Timeout) ->
-    send_leader_request(PeerID, get_conf_request, [], Timeout).
+    sync_leader_read_request(PeerID, get_conf_request, [], Timeout).
 
 %% @doc Write data to user backend
 -spec write(peer_id(), term(), timeout()) -> {ok,term()}|{leader, peer_id()}.
@@ -244,11 +252,17 @@ make_snapshot_info(Peer, From, Index) ->
 truncate_log(Raft, SnapshotInfo) ->
     send_all_state_event(Raft, SnapshotInfo).
 
--spec send_leader_request(peer_id(), atom(), list(), timeout()) -> {ok, term()}|retry|{error, not_leader}|{error, term()}.
-send_leader_request(PeerID, Function, Args, Timeout) ->
+-spec sync_leader_read_request(peer_id(), atom(), list(), timeout()) -> {ok, term()}|retry|{error, not_leader}|{error, term()}.
+sync_leader_read_request(PeerID, Function, Args, Timeout) ->
     Now = os:timestamp(),
     Req = #read_request{timeout = Timeout, function = Function, args = Args, start_time = Now},
     gen_fsm:sync_send_all_state_event(PeerID, Req, Timeout).
+
+-spec async_leader_read_request(peer_id(), atom(), list(), timeout()) -> {ok, term()}|retry|{error, not_leader}|{error, term()}.
+async_leader_read_request(PeerID, From,Function, Args, Timeout) ->
+    Now = os:timestamp(),
+    Req = #read_request{timeout = Timeout, function = Function, args = [From|Args], start_time = Now},
+    gen_fsm:send_all_state_event(PeerID,Req).
 
 %%%===================================================================
 %%% Peer lifecycle
@@ -495,6 +509,21 @@ handle_event({sync_peer,{sync_vote,ConfID,Vote}},candidate, State=#state{config 
     maybe_become_leader(Vote,candidate,State);
 handle_event({sync_peer,_}, StateName, State) ->
     {next_state, StateName, State};
+handle_event(Req = #read_request{}, leader,
+    State = #state{sessions = Sessions, epoch = Epoch}) ->
+    #sessions{read = Requests} = Sessions,
+    %%First we must ensure that we are leader.
+    %%Change epoch and send hearbeat
+    %%Reqeust will be processed than quorum will agree that we are leader
+    Epoch1 = Epoch + 1,
+    Requests1 = [{Epoch1, Req} | Requests],
+    State1 = State#state{epoch = Epoch1, sessions = Sessions#sessions{read = Requests1}},
+    ok = update_peer_last_index(State1),
+    replicate_peer_request(?OPTIMISTIC_REPLICATE_CMD, State1, []),
+    {next_state, leader, State1};
+handle_event(#read_request{args = [From|_]}, StateName, State) ->
+    reply_caller(From,{leader, State#state.leader}),
+    {next_state,StateName, State};
 handle_event(Req=#write{}, leader, State) ->
     %%Try replicate new entry.
     %%Response will be sended after entry will be ready to commit
