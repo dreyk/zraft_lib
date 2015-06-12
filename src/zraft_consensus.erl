@@ -258,10 +258,10 @@ sync_leader_read_request(PeerID, Function, Args, Timeout) ->
     Req = #read_request{timeout = Timeout, function = Function, args = Args, start_time = Now},
     gen_fsm:sync_send_all_state_event(PeerID, Req, Timeout).
 
--spec async_leader_read_request(peer_id(), atom(), list(), timeout()) -> {ok, term()}|retry|{error, not_leader}|{error, term()}.
+-spec async_leader_read_request(peer_id(),reference(), atom(), list(), timeout()) -> {ok, term()}|retry|{error, not_leader}|{error, term()}.
 async_leader_read_request(PeerID, From,Function, Args, Timeout) ->
     Now = os:timestamp(),
-    Req = #read_request{timeout = Timeout, function = Function, args = [From|Args], start_time = Now},
+    Req = #read_request{timeout = Timeout, function = Function, args = [{self(),From}|Args], start_time = Now},
     gen_fsm:send_all_state_event(PeerID,Req).
 
 %%%===================================================================

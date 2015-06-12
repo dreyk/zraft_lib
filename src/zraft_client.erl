@@ -27,6 +27,7 @@
     get_conf/1,
     get_conf/2,
     light_session/1,
+    light_session/2,
     create/2,
     create/3
 ]).
@@ -40,14 +41,24 @@
 
 -define(TIMEOUT, 5000).
 -define(CREATE_TIMEOUT, 5000).
+-define(BACKOFF,3000).
 
 
 %%%===================================================================
 %%% Read/Write
 %%%===================================================================
-
 -spec light_session(Conf) -> zraft_session_obj:light_session() | {error, Reason} when
     Conf :: list(zraft_consensus:peer_id())|zraft_consensus:peer_id(),
+    Reason :: no_peers|term().
+%% @doc Create light session for read/write operations.
+%% @equiv light_session(Conf,3000)
+%% @end
+light_session(Conf) ->
+    light_session(Conf,?BACKOFF).
+
+-spec light_session(Conf,BackOff) -> zraft_session_obj:light_session() | {error, Reason} when
+    Conf :: list(zraft_consensus:peer_id())|zraft_consensus:peer_id(),
+    BackOff::timeout(),
     Reason :: no_peers|term().
 %% @doc Create light session for read/write operations
 %%
@@ -60,14 +71,14 @@
 %%
 %% If Conf is empty list then  {error,no_peers} will be returned.
 %% @end
-light_session([_F | _] = Peers) ->
-    zraft_session_obj:create(Peers);
-light_session([]) ->
+light_session([_F | _] = Peers,BackOff) ->
+    zraft_session_obj:create(Peers,BackOff);
+light_session([],_BackOff) ->
     {error, no_peers};
-light_session(PeerID) ->
+light_session(PeerID,BackOff) ->
     case get_conf(PeerID) of
         {ok, {Leader, Peers}} ->
-            S1 = zraft_session_obj:create(Peers),
+            S1 = zraft_session_obj:create(Peers,BackOff),
             zraft_session_obj:set_leader(Leader,S1);
         Error ->
             Error
