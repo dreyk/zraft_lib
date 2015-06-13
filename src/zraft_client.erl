@@ -27,7 +27,7 @@
     get_conf/1,
     get_conf/2,
     light_session/1,
-    light_session/2,
+    light_session/3,
     create/2,
     create/3
 ]).
@@ -51,14 +51,16 @@
     Conf :: list(zraft_consensus:peer_id())|zraft_consensus:peer_id(),
     Reason :: no_peers|term().
 %% @doc Create light session for read/write operations.
-%% @equiv light_session(Conf,3000)
+%% @equiv light_session(Conf,zraft_consensus:get_election_timeout())
 %% @end
 light_session(Conf) ->
-    light_session(Conf,?BACKOFF).
+    E = zraft_consensus:get_election_timeout(),
+    light_session(Conf,E*2,E).
 
--spec light_session(Conf,BackOff) -> zraft_session_obj:light_session() | {error, Reason} when
+-spec light_session(Conf,BackOff,Election) -> zraft_session_obj:light_session() | {error, Reason} when
     Conf :: list(zraft_consensus:peer_id())|zraft_consensus:peer_id(),
     BackOff::timeout(),
+    Election::timeout(),
     Reason :: no_peers|term().
 %% @doc Create light session for read/write operations
 %%
@@ -71,14 +73,14 @@ light_session(Conf) ->
 %%
 %% If Conf is empty list then  {error,no_peers} will be returned.
 %% @end
-light_session([_F | _] = Peers,BackOff) ->
-    zraft_session_obj:create(Peers,BackOff);
-light_session([],_BackOff) ->
+light_session([_F | _] = Peers,BackOff,Election) ->
+    zraft_session_obj:create(Peers,BackOff,Election);
+light_session([],_BackOff,_Election) ->
     {error, no_peers};
-light_session(PeerID,BackOff) ->
+light_session(PeerID,BackOff,Election) ->
     case get_conf(PeerID) of
         {ok, {Leader, Peers}} ->
-            S1 = zraft_session_obj:create(Peers,BackOff),
+            S1 = zraft_session_obj:create(Peers,BackOff,Election),
             zraft_session_obj:set_leader(Leader,S1);
         Error ->
             Error
@@ -286,13 +288,18 @@ peer_execute_sessions(Session, Fun, Start, Timeout) ->
         {ok, Result} ->
             {Result,Session};
         {leader, NewLeader} when NewLeader /= undefined ->
-            {continue,zraft_session_obj:set_leader(NewLeader,Session)};
-        _Else ->
-            case zraft_session_obj:fail(Session) of
+            case zraft_session_obj:change_leader(NewLeader,Session) of
                 {error,Err}->
                     {error,Err};
                 Session1->
                     {continue,Session1}
+            end;
+        _Else ->
+            case zraft_session_obj:fail(Session) of
+                {error,Err}->
+                    {error,Err};
+                Session2->
+                    {continue,Session2}
             end
     end,
     case Next of

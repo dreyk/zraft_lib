@@ -21,8 +21,9 @@
 -author("dreyk").
 
 -export([
-    create/2,
+    create/3,
     set_leader/2,
+    change_leader/2,
     next/1,
     fail/1,
     reset/1,
@@ -40,7 +41,7 @@
 
 -define(NORMAL, ok).
 
--record(light_session, {peers, leader, backoff}).
+-record(light_session, {peers, leader, backoff,election_timeout}).
 
 -type light_session() :: #light_session{}.
 
@@ -49,78 +50,112 @@ is_session(#light_session{}) ->
 is_session(_) ->
     false.
 
--spec create(list(zraft_consensus:peer_id()), timeout()) -> light_session().
-create([], _BackOff) ->
+-spec create(list(zraft_consensus:peer_id()), timeout(),timeout()) -> light_session().
+create([], _BackOff,_ElectionTimeout) ->
     throw({error, no_peers});
-create([F | _] = Peers, BackOff) ->
-    PeersStatus = [{P, ?NORMAL} || P <- Peers],
-    #light_session{peers = orddict:from_list(PeersStatus), leader = F, backoff = BackOff * 1000}.
+create([F | _] = Peers, BackOff,ElectionTimeout) ->
+    PeersStatus = [{P, {?NORMAL,?NORMAL}} || P <- Peers],
+    #light_session{
+        peers = orddict:from_list(PeersStatus),
+        leader = F,
+        backoff = BackOff * 1000,
+        election_timeout = ElectionTimeout*1000
+    }.
 
--spec set_leader(zraft_consensus:peer_id(), light_session()) -> light_session().
-set_leader(NewLeader, SObj = #light_session{peers = Peers, leader = OldLeader}) ->
-    Peers1 = orddict:store(OldLeader, ?NORMAL, Peers),
-    Peers2 = orddict:store(NewLeader, ?NORMAL, Peers1),
-    SObj#light_session{peers = Peers2, leader = NewLeader}.
+-spec set_leader(zraft_consensus:peer_id(), light_session())->light_session().
+set_leader(NewLeader,SObj = #light_session{peers = Peers})->
+    [_|T] = reorder(NewLeader,Peers,[]),
+    Peers1 = [{NewLeader,{?NORMAL,?NORMAL}}|T],
+    SObj#light_session{peers = Peers1,leader = NewLeader}.
 
--spec next(light_session()) -> light_session().
-next(SObj = #light_session{peers = Peers, leader = Leader,backoff = BackOff}) ->
-    Peers1 = backoff(BackOff,Peers),
-    case next_candidate(Leader, Peers1, undefined) of
-        not_found ->
-            SObj;
-        NewCandidate ->
-            SObj#light_session{leader = NewCandidate, peers = Peers}
-    end.
+-spec change_leader(zraft_consensus:peer_id(), light_session()) ->
+    light_session()|{error, all_failed}|{error,etimeout}.
+change_leader(NewLeader,SObj = #light_session{peers = Peers})->
+    [{Old,{O1,_O2}}|T1] = Peers,
+    Peers1 = [{Old,{O1,os:timestamp()}}|T1],
+    Peers2 = reorder(NewLeader,Peers1,[]),
+    find_leader(SObj#light_session{peers = Peers2}).
 
--spec fail(light_session()) -> light_session()|{error, all_failed}.
-fail(SObj = #light_session{peers = Peers, leader = Leader,backoff = BackOff}) ->
-    Peers1 = backoff(BackOff,Peers),
-    Peers2 = orddict:store(Leader, os:timestamp(), Peers1),
-    case next_candidate(Leader, Peers2, undefined) of
-        not_found ->
+find_leader(SObj = #light_session{peers = Peers,backoff = BackOff,election_timeout = Election})->
+    Check = fun({_,{N1,N2}})->
+        case is_expired(BackOff,N1) of
+            true->
+                case is_expired(Election,N2) of
+                    true->
+                        true;
+                    _->
+                        false
+                end;
+            _->
+                failed
+        end
+    end,
+    case next_candidate(Check,Peers,[],failed) of
+        {failed,_,_}->
             {error, all_failed};
-        NewCandidate ->
-            SObj#light_session{leader = NewCandidate, peers = Peers2}
+        {false,_,_}->
+            {error,etimeout};
+        {true,Leader,Peer3}->
+            SObj#light_session{leader = Leader,peers = Peer3}
     end.
+
+next_candidate(_Check,[],Acc,Status)->
+    {Status,undefined,lists:reverse(Acc)};
+next_candidate(Check,[{P,_}=E|T],Acc,Status)->
+    case Check(E) of
+        failed->
+            next_candidate(Check,T,[E|Acc],Status);
+        true->
+            {true,P,[{P,{?NORMAL,?NORMAL}}|T]++lists:reverse(Acc)};
+        false->
+            next_candidate(Check,T,[E|Acc],false)
+    end.
+
+reorder(P,[{P,_}|_]=H,Acc)->
+    H++lists:reverse(Acc);
+reorder(P,[E|T],Acc)->
+    reorder(P,T,[E|Acc]);
+reorder(P,[],Acc)->
+    [{P,{?NORMAL,?NORMAL}}|lists:reverse(Acc)].
+
+-spec next(light_session()) -> light_session()|{error, all_failed}|{error,etimeout}.
+next(SObj = #light_session{peers = Peers}) ->
+    [{Old,{O1,_O2}}|T1] = Peers,
+    Peers1 = [{Old,{O1,os:timestamp()}}|T1],
+    find_leader(SObj#light_session{peers = Peers1}).
+
+-spec fail(light_session()) -> light_session()|{error, all_failed}|{error,etimeout}.
+fail(SObj = #light_session{peers = Peers}) ->
+    [{Old,{_O1,O2}}|T1] = Peers,
+    Peers1 = [{Old,{os:timestamp(),O2}}|T1],
+    find_leader(SObj#light_session{peers = Peers1}).
 
 -spec reset(light_session()) -> light_session().
-reset(#light_session{peers = Peers,backoff = BackOff}) ->
-    create([P || {P, _} <- Peers],BackOff).
+reset(SObj = #light_session{peers = Peers}) ->
+    Peers1 = [{P,{?NORMAL,?NORMAL}}||{P,_}<-Peers],
+    [{Leader,_}|_]=lists:keysort(1,Peers1),
+    SObj#light_session{peers = Peers1,leader = Leader}.
+
 
 -spec leader(light_session()) -> zraft_consensus:peer_id().
 leader(#light_session{leader = Leader}) ->
     Leader.
 
 
-next_candidate(PrevLeader, [{C, ?NORMAL} | T], undefined) when C < PrevLeader ->
-    next_candidate(PrevLeader, T, C);
-next_candidate(PrevLeader, [{C, ?NORMAL} | _T], _FirstCandidate) when C > PrevLeader ->
-    C;
-next_candidate(PrevLeader, [_ | T], FirstCandidate) ->
-    next_candidate(PrevLeader, T, FirstCandidate);
-next_candidate(_PrevLeader, [], undefined) ->
-    not_found;
-next_candidate(_PrevLeader, [], FirstCandidate) ->
-    FirstCandidate.
-
-
-backoff(BackOff, Peers) ->
-    orddict:map(
-        fun
-            (_K, ?NORMAL) ->
-                ?NORMAL;
-            (_K, S1) ->
-                case timer:now_diff(os:timestamp(), S1) of
-                    D when D >= BackOff ->
-                        ?NORMAL;
-                    _ ->
-                        S1
-                end end, Peers).
+is_expired(_Timeout,?NORMAL)->
+    true;
+is_expired(Timeout,V)->
+    case timer:now_diff(os:timestamp(), V) of
+        D when D >= Timeout ->
+            true;
+        _ ->
+            false
+     end.
 
 -ifdef(TEST).
 
 next_leader_test() ->
-    S1 = create([1, 2, 3, 4, 5],100),
+    S1 = create([1, 2, 3, 4, 5],100,100),
     L1 = leader(S1),
     ?assertEqual(1, L1),
     S2 = set_leader(3, S1),

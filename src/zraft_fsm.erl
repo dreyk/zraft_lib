@@ -185,9 +185,9 @@ handle_info({'DOWN', Ref, process, _, Error},
     end;
 
 handle_info({'DOWN', CRef, process, From, _}, State = #state{monitors = Monitors, raft_state = leader}) ->
-    case ets:lookup(Monitors,From) of
+    case ets:lookup(Monitors, From) of
         [{From, CRef, _, _}] ->
-            zraft_consensus:send_swrite(State#state.raft,#swrite{data = CRef,from = From,message_id = ?EXPIRE_SESSION});
+            zraft_consensus:send_swrite(State#state.raft, #swrite{data = CRef, from = From, message_id = ?EXPIRE_SESSION});
         [] ->
             ok
     end,
@@ -222,19 +222,25 @@ read(#read{from = From, request = Query, watch = false}, State = #state{back_end
     {noreply, State};
 read(#read{from = From, request = Query, watch = WatchRef, global_time = Time},
     State = #state{back_end = BackEnd, ustate = UState}) ->
-    case is_in_session(false, From, Time, State) of
+    Caller = case From of
+                 {To, _} ->
+                     To;
+                 _ when is_pid(From) ->
+                     From
+             end,
+    case is_in_session(false, Caller, Time, State) of
         true ->
             case BackEnd:query(Query, UState) of
                 {ok, WatchInfo, Res} ->
                     reply_caller(State, From, #sread_reply{data = Res, ref = WatchRef}),
-                    register_watchers(WatchInfo, From, WatchRef, State);
+                    register_watchers(WatchInfo, Caller, WatchRef, State);
                 {ok, _Res} ->
                     reply_caller(State, From, #sread_reply{data = {error, watch_not_supported}, ref = WatchRef});
                 {error, Err} ->
                     reply_caller(State, From, #sread_reply{data = {error, Err}, ref = WatchRef})
             end;
         false ->
-            reply_caller(State, From, ?DISCONNECT_MSG)
+            reply_caller(State, Caller, ?DISCONNECT_MSG)
     end,
     {noreply, State}.
 
@@ -263,15 +269,14 @@ trigger_watchers(Updates, #state{watchers = WatchersTab}) ->
         end end, [], Updates),
     L2 = lists:usort(L1),
     lists:foreach(fun({Caller, WatchRef}) ->
-        Caller ! #swatch_trigger{ref = WatchRef} end, L2).
+        Caller ! #swatch_trigger{ref = WatchRef, reason = change} end, L2).
 
 trigger_all_watchers(#state{watchers = WatchersTab}) ->
-    All = ets:tab2list(WatchersTab),
-    L1 = lists:foldl(fun({_, Caller, WatchRef}, Acc) ->
-        [{Caller, WatchRef} | Acc] end, [], All),
+    L1 = ets:foldl(fun({_, Caller, WatchRef}, Acc) ->
+        [{Caller, WatchRef} | Acc] end, [], WatchersTab),
     L2 = lists:usort(L1),
     lists:foreach(fun({Caller, WatchRef}) ->
-        Caller ! #swatch_trigger{ref = WatchRef} end, L2).
+        Caller ! #swatch_trigger{ref = WatchRef, reason = change_leader} end, L2).
 
 append([], State) ->
     {noreply, State};
@@ -324,11 +329,11 @@ apply_data(GlobalTime, Req = #swrite{}, BackEnd, UState, State) ->
     } = Req,
     #state{monitors = Monitors, raft_state = RaftState, sessions = Sessions} = State,
     if
-        MsgID == ?EXPIRE_SESSION->
+        MsgID == ?EXPIRE_SESSION ->
             case ets:lookup(Monitors, From) of
-                [{_,Data,_,_}]->
-                    expire_session(From,BackEnd,UState,State);
-                _->
+                [{_, Data, _, _}] ->
+                    expire_session(From, BackEnd, UState, State);
+                _ ->
                     %%already expired
                     UState
             end;
@@ -383,7 +388,7 @@ apply_data(_GlobalTime, Else, _BackEnd, UState, State) ->
     ?WARNING(State, "Unknow data value ~p", [Else]),
     UState.
 
-is_in_session(UpdateSession, From, Time, #state{monitors = Monitors}) ->
+is_in_session(UpdateSession, From, Time,#state{monitors = Monitors}) ->
     case ets:lookup(Monitors, From) of
         [{_, MRef, ExpiredAt, Timeout}] when Time < ExpiredAt andalso UpdateSession ->
             ets:insert(Monitors, {From, MRef, Time + Timeout, Timeout}),
@@ -395,7 +400,12 @@ is_in_session(UpdateSession, From, Time, #state{monitors = Monitors}) ->
     end.
 
 create_new_session(From, GlobalTime, Timeout, State) ->
-    MRef = erlang:monitor(process, From),
+    MRef = if
+               State#state.raft_state == leader ->
+                   erlang:monitor(process, From);
+               true ->
+                   undefined
+           end,
     %%register client process local
     true = ets:insert_new(State#state.monitors, {From, MRef, GlobalTime + Timeout, Timeout}).
 
@@ -430,19 +440,21 @@ expire_sessions(GlobalTime, State = #state{monitors = Monitors, back_end = BackE
     State#state{ustate = UState1}.
 
 expire_session(From, BackEnd, Ustate, State = #state{raft_state = RaftState}) ->
-    expire_session_data(From, BackEnd, Ustate, State),
-    reply_caller(RaftState, From, ?DISCONNECT_MSG).
-expire_session_data(From, BackEnd, Ustate, #state{sessions = Sessions, monitors = Monitors, watchers = Watchers}) ->
-    {ok, UState1} = BackEnd:expire_session(From, Ustate),
+    UState1 = expire_session_data(From, BackEnd, Ustate, State),
+    reply_caller(RaftState, From, ?DISCONNECT_MSG),
+    UState1.
+expire_session_data(From, BackEnd, Ustate, State = #state{sessions = Sessions, monitors = Monitors, watchers = Watchers}) ->
+    {ok, ExpiredKeys, UState1} = BackEnd:expire_session(From, Ustate),
     ets:delete(Sessions, {reply, From}),
     ets:match_delete(Watchers, {{watch, '_'}, From, '_'}),
     case ets:lookup(Monitors, From) of
         [{_, MRef, _, _}] ->
-            erlang:demonitor(MRef),
+            demonitor_session(MRef),
             ets:delete(Monitors, From);
         [] ->
             ok
     end,
+    trigger_watchers(ExpiredKeys, State),
     UState1.
 
 clean_dir(Dir) ->
@@ -725,7 +737,12 @@ restore_sessions(State = #state{last_dir = SnapshotDir}) ->
     R2 = ets:file2tab(SessionsFile),
     case {R1, R2} of
         {{ok, T1}, {ok, T2}} ->
-            upgrade_monitors(T1),
+            if
+                State#state.raft_state == leader ->
+                    upgrade_monitors(T1);
+                true ->
+                    ok
+            end,
             State#state{monitors = T1, sessions = T2};
         _ ->
             read_table_error(R1, MonitorFile, State),
@@ -736,12 +753,11 @@ restore_sessions(State = #state{last_dir = SnapshotDir}) ->
     end.
 
 upgrade_monitors(Tab) ->
-    L = ets:tab2list(Tab),
-    ets:delete_all_objects(Tab),
-    lists:foreach(fun({From, _OldRef, E, T}) ->
+    ets:foldl(fun({From, _OldRef, _E, _T}, Acc) ->
         MRef = erlang:monitor(process, From),
-        ets:insert(Tab, {From, MRef, E, T})
-    end, L).
+        ets:update_element(Tab, From, {2, MRef}),
+        Acc
+    end, 0, Tab).
 
 read_table_error({ok, _}, _File, _State) ->
     ok;
@@ -796,29 +812,32 @@ change_raft_state(NewRaftState, State = #state{raft_state = leader, watchers = W
     when NewRaftState /= leader ->
     trigger_all_watchers(State),
     ets:delete_all_objects(W),
-    AllMonitors = ets:tab2list(M),
-    lists:foreach(fun(O) ->
+    ets:foldl(fun(O, Acc) ->
         case O of
             {_, MRef, _, _} ->
-                erlang:demonitor(MRef);
+                demonitor_session(MRef);
             _ ->
                 ok
-        end end, AllMonitors),
+        end, Acc end, 0, M),
     {noreply, State#state{raft_state = NewRaftState}};
 change_raft_state(leader, State = #state{monitors = M, raft = Raft}) ->
     NewLeader = zraft_util:peer_id(Raft),
     upgrade_monitors(State#state.monitors),
-    AllMonitors = ets:tab2list(M),
-    lists:foreach(fun(O) ->
+    ets:foldl(fun(O, Acc) ->
         case O of
             {Caller, _, _, _} ->
                 reply_caller(Caller, {leader, NewLeader});
             _ ->
                 ok
-        end end, AllMonitors),
+        end, Acc end, 0, M),
     {noreply, State#state{raft_state = leader}};
 change_raft_state(NewRaftState, State) ->
     {noreply, State#state{raft_state = NewRaftState}}.
+
+demonitor_session(undefined)->
+    ok;
+demonitor_session(MRef)->
+    erlang:demonitor(MRef).
 
 
 -ifdef(TEST).
@@ -963,8 +982,8 @@ snapshot() ->
     end}.
 
 setup_sessions() ->
-    meck:new(zraft_dict_backend,[passthrough]),
-    #state{back_end = zraft_dict_backend, raft_state = leader}.
+    meck:new(zraft_dict_backend, [passthrough]),
+    #state{back_end = zraft_dict_backend, raft_state = leader, ustate = dict:new()}.
 stop_sessions(_) ->
     meck:unload(zraft_dict_backend),
     ok.
@@ -1048,7 +1067,7 @@ session_read_watch(State0) ->
         RRes1 = wait_result(),
         ?assertEqual(?DISCONNECT_MSG, RRes1),
         OpenReq = #swrite{data = 10, from = Me, message_id = ?CLIENT_CONNECT},
-        apply_data(0, OpenReq, zraft_dict_backend, [], State),
+        apply_data(0, OpenReq, zraft_dict_backend, dict:new(), State),
         OpenRes1 = wait_result(),
         ?assertMatch(#swrite_reply{sequence = ?CLIENT_CONNECT, data = ok}, OpenRes1),
         S1 = ets:lookup(Monitor, Me),
@@ -1062,7 +1081,7 @@ session_read_watch(State0) ->
         Vals1 = ets:tab2list(Watchers),
         ?assertMatch([{{watch, trigger1}, _, ref1}], Vals1),
         W1 = #swrite{data = 1, acc_upto = 0, from = Me, message_id = 1},
-        apply_data(1, W1, zraft_dict_backend, [], State),
+        apply_data(1, W1, zraft_dict_backend, dict:new(), State),
         Trigger1 = wait_result(),
         ?assertMatch(#swatch_trigger{ref = ref1}, Trigger1),
         WRes1 = wait_result(),
@@ -1079,21 +1098,21 @@ session_fail(State0) ->
         apply_data(0, OpenReq, zraft_dict_backend, [], State),
         OpenRes1 = wait_result(),
         ?assertMatch(#swrite_reply{sequence = ?CLIENT_CONNECT, data = ok}, OpenRes1),
-        [{Me,MRef,10,10}] = ets:lookup(Monitor, Me),
-        W1 = #swrite{data = 1, acc_upto = 0, from = Me, message_id = 1,temporary = true},
-        apply_data(1, W1, zraft_dict_backend, [], State),
+        [{Me, MRef, 10, 10}] = ets:lookup(Monitor, Me),
+        W1 = #swrite{data = {1, 1}, acc_upto = 0, from = Me, message_id = 1, temporary = true},
+        apply_data(1, W1, zraft_dict_backend, dict:new(), State),
         WRes1 = wait_result(),
-        ?assertMatch(#swrite_reply{sequence = 1, data = {error,session_not_supported}}, WRes1),
-        handle_info({'DOWN',MRef, process,Me,test},State),
+        ?assertMatch(#swrite_reply{sequence = 1, data = ok}, WRes1),
+        handle_info({'DOWN', MRef, process, Me, test}, State),
         RepCmd = wait_result(),
-        ExpMsg = #swrite{message_id = ?EXPIRE_SESSION,data = MRef,from = Me},
-        ?assertEqual({'$gen_all_state_event',ExpMsg},RepCmd),
-        meck:expect(zraft_dict_backend,expire_session, fun(From, St1) -> From ! expired,{ok,St1} end),
+        ExpMsg = #swrite{message_id = ?EXPIRE_SESSION, data = MRef, from = Me},
+        ?assertEqual({'$gen_all_state_event', ExpMsg}, RepCmd),
+        meck:expect(zraft_dict_backend, expire_session, fun(From, St1) -> From ! expired, {ok, [], St1} end),
         apply_data(2, ExpMsg, zraft_dict_backend, [], State),
         R1 = wait_result(),
-        ?assertEqual(expired,R1),
+        ?assertEqual(expired, R1),
         R2 = wait_result(),
-        ?assertEqual(?DISCONNECT_MSG,R2)
+        ?assertEqual(?DISCONNECT_MSG, R2)
 
     end}.
 

@@ -1298,8 +1298,8 @@ reset_read_requests(State = #state{sessions = Sessions, leader = Leader}) ->
     State#state{sessions = Sessions#sessions{read = []}}.
 
 
-apply_read_requests(_Epoch,State = #state{allow_commit = false}) ->
-    State;
+%%apply_read_requests(_Epoch,State = #state{allow_commit = false}) ->
+%%    State;
 apply_read_requests(Epoch,State = #state{sessions = Sessions}) ->
     #sessions{read = Requests} = Sessions,
     Requests1 = apply_read_requests(Epoch, Requests, State),
@@ -1344,7 +1344,7 @@ reset_request(#read_request{args = [From | _]}, Reason) ->
 
 %%Query data from state FSM.
 read_request(#state{state_fsm = FSM}, From,Watcher,Request) ->
-    zraft_fsm:cmd(FSM, #read{from = From, request = Request,watch = Watcher}).
+    zraft_fsm:cmd(FSM, #read{from = From, request = Request,watch = Watcher,global_time = zraft_util:now_millisec()}).
 
 %%Get last stable configuration
 get_conf_request(#state{log_state = LogState, config = Conf}, From) ->

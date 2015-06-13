@@ -73,7 +73,7 @@
 -record(swrite_reply,{sequence,data}).
 -record(swrite_error,{sequence,leader,error}).
 -record(sread_reply,{data,ref}).
--record(swatch_trigger,{ref}).
+-record(swatch_trigger,{ref,reason}).
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").

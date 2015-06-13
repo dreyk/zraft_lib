@@ -23,7 +23,18 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/2]).
+-export([
+    start_link/2,
+    query/3,
+    query/4,
+    write/3,
+    write/4,
+    stop/1
+]).
+
+-export_type([
+    session/0
+]).
 
 -export([init/1,
     handle_call/3,
@@ -34,9 +45,44 @@
 
 -include_lib("zraft_lib/include/zraft.hrl").
 
--define(BACKOFF, 3000).
 
--record(state, {session, requests,watchers, message_id, acc_upto, leader_mref, epoch, timer, timeout, connected}).
+-define(CONNECTING, connecting).
+-define(CONNECTED, connected).
+-define(PENDFING, pending).
+
+-type session() :: pid().
+
+-record(state, {
+    session,
+    requests,
+    watchers,
+    message_id,
+    acc_upto,
+    leader_mref,
+    epoch,
+    timer,
+    timeout,
+    pending,
+    connected}).
+
+
+-spec query(session(), term(), timeout()) -> {ok, term()}.
+query(Session, Query, Timeout) ->
+    query(Session, Query, false, Timeout).
+-spec query(session(), term(), reference()|false, timeout()) -> {ok, term()}.
+query(Session, Query, Watch, Timeout) ->
+    gen_server:call(Session, {query, {Query, Watch, Timeout}}, Timeout).
+
+-spec write(session(), term(), timeout()) -> {ok, term()}.
+write(Session, Data, Timeout) ->
+    write(Session, Data, false, Timeout).
+-spec write(session(), term(), true|false, timeout()) -> {ok, term()}.
+write(Session, Data, Temporary, Timeout) ->
+    gen_server:call(Session, {write, {Data, Temporary, Timeout}}, Timeout).
+
+-spec stop(session()) -> ok.
+stop(Session) ->
+    gen_server:cast(Session, stop).
 
 -spec start_link(zraft_consensus:peer_id()|list(zraft_consensus:peer_id()), timeout()) ->
     {ok, pid()} | {error, Reason :: term()}.
@@ -44,9 +90,11 @@ start_link(Peer, Timeout) ->
     gen_server:start_link(?MODULE, [Peer, Timeout], []).
 
 init([Peer, Timeout]) ->
-    Session = zraft_client:light_session(Peer, ?BACKOFF),
+    ETime = zraft_consensus:get_election_timeout(),
+    Session = zraft_client:light_session(Peer, ETime * 4, ETime*2),
     Requests = ets:new(client_session, [ordered_set, {write_concurrency, false}, {read_concurrency, false}]),
-    Watchers = ets:new(client_watchers,[bag,{write_concurrency, false}, {read_concurrency, false}]),
+    Watchers = ets:new(client_watchers, [bag, {write_concurrency, false}, {read_concurrency, false}]),
+    ConnectTimer = erlang:start_timer(Timeout, self(), connect_timeout),
     State = #state{
         session = Session,
         requests = Requests,
@@ -54,7 +102,9 @@ init([Peer, Timeout]) ->
         message_id = 1,
         epoch = 1,
         timeout = Timeout,
-        connected = false
+        connected = false,
+        timer = ConnectTimer,
+        pending = false
     },
     State1 = connect(State),
     {ok, State1}.
@@ -65,36 +115,71 @@ handle_call({write, Req}, From, State) ->
 handle_call({query, Req}, From, State) ->
     handle_query(Req, From, State).
 
+handle_cast(stop, State) ->
+    stop_session(State),
+    {stop, normal, State};
 handle_cast(_Request, State) ->
     {noreply, State}.
 
 
+
+handle_info(#swrite_error{sequence = Sequence, error = not_leader, leader = NewLeader}, State) ->
+    %%attempt resend only one failed request. Other maybe ok.
+    case change_leader(NewLeader, State) of
+        {false, State1} ->
+            {noreply, State1};
+        {true, State1} ->
+            if
+                Sequence == ?CLIENT_PING ->
+                    NewState = update_upto(State1);%%send new ping if it's necessary
+                Sequence == ?CLIENT_CONNECT ->
+                    NewState = connect(State1);
+                is_integer(Sequence) ->
+                    NewState = repeat_write(Sequence, State1)
+            end,
+            {noreply, NewState}
+    end;
+
 handle_info(#swrite_reply{sequence = ?CLIENT_PING, data = Timer}, State = #state{timer = Timer}) ->
-    State1 = update_upto(State),
-    {noreply, State1};
+    %%State1 = update_upto(State),
+    {noreply, State};
 handle_info(#swrite_reply{sequence = ?CLIENT_PING}, State) ->
     {noreply, State};
-handle_info(#swrite_reply{sequence = ?CLIENT_CONNECT}, State = #state{}) ->
-    State1 = ping(State#state{connected = true}),
+
+handle_info(#swrite_reply{sequence = ?CLIENT_CONNECT}, State = #state{epoch = E,timer = TRef}) ->
+    cancel_timer(TRef),
+    State1 = restart_requets(State#state{connected = true,epoch = E+1}),
     {noreply, State1};
+
 handle_info(#swrite_reply{sequence = ID, data = Result}, State) when is_integer(ID) ->
-    write_reply(ID, Result, State);
-handle_info(#swrite_error{sequence = ID, leader = NewLeader, error = not_leader}, State) when is_integer(ID) ->
-    %%repeat only this request. other requests will be restart on session change leader event
-    State1 = change_leader(NewLeader, State),
-    repeat_write(ID, State1);
+    NewState = write_reply(ID, Result, State),
+    {noreply, NewState};
+
 
 handle_info({{read, ReadRef}, #sread_reply{data = Data}}, State) ->
-    read_reply(ReadRef, Data, State);
+    NewState = read_reply(ReadRef, Data, State),
+    {noreply, NewState};
 handle_info({{read, ReadRef}, {leader, NewLeader}}, State) ->
     %%repeat only this request. other requests will be restart on session change leader event
-    State1 = change_leader(NewLeader, State),
-    repeat_read(ReadRef, State1);
+    case change_leader(NewLeader, State) of
+        {false,State1}->
+            {noreply,State1};
+        {true,State1}->
+            NewState = repeat_read(ReadRef, State1)    ,
+            {noreply, NewState}
+    end;
 handle_info({{read, ReadRef}, Data}, State) ->
-    read_reply(ReadRef, Data, State);
-handle_info(#swatch_trigger{ref = {Caller, Watch}}, State = #state{watchers = Watcher}) ->
-    Caller ! #swatch_trigger{ref = Watch},
-    ets:delete(Watcher, {Caller, Watch}),
+    Reply = case Data of
+                {ok, R1} ->
+                    R1;
+                _ ->
+                    Data
+            end,
+    NewState = read_reply(ReadRef, Reply, State),
+    {noreply, NewState};
+handle_info(#swatch_trigger{ref = {Caller, Watch}, reason = Reson}, State = #state{watchers = Watcher}) ->
+    Caller ! #swatch_trigger{ref = Watch, reason = Reson},
+    ets:delete_object(Watcher, {Caller, Watch}),
     {noreply, State};
 
 handle_info(?DISCONNECT_MSG, State) ->
@@ -102,19 +187,35 @@ handle_info(?DISCONNECT_MSG, State) ->
 
 handle_info({leader, NewLeader}, State) ->
     lager:warning("Leader changed to ~p", [NewLeader]),
-    State1 = change_leader(NewLeader, State),
-    %%Actualy no requests will be restart if leader has not changed,because epoch doesn't change
-    State2 = restart_requets(State1),
-    {noreply, State2};
+    case set_leader(NewLeader,State) of
+        {false,State1}->
+            {noreply, State1};
+        {true,State1}->
+            State2 = restart_requets(State1),
+            {noreply, State2}
+    end;
 handle_info({'DOWN', Ref, process, _, _}, State = #state{leader_mref = Ref}) ->
     lager:warning("Current leader has failed"),
-    State1 = change_leader(failed, State),
-    State2 = restart_requets(State1),
-    {noreply, State2};
+    State1 = State#state{leader_mref = undefined},
+    case change_leader(failed, State1) of
+        {false,State2}->
+            {noreply,State2};
+        {true,State2}->
+            State3 = restart_requets(State2),
+            {noreply, State3}
+    end;
 handle_info({'DOWN', Ref, process, Caller, _}, State) ->
     State1 = caller_down(Caller, Ref, State),
     {noreply, State1};
 
+handle_info({timeout, TimerRef, pending}, State = #state{pending = TimerRef}) ->
+    case change_leader(undefined,State) of
+        {false,State1}->
+            {noreply,State1};
+        {true,State1}->
+            State2 = restart_requets(State1),
+            {noreply,State2}
+    end;
 handle_info({timeout, TimerRef, session_timeout}, State = #state{timer = TimerRef}) ->
     lager:warning("Session timeout"),
     {stop, pong_timeout, State};
@@ -136,6 +237,13 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 
+pending(State = #state{pending = P}) when P /= false ->
+    State;
+pending(State) ->
+    NewTimer = erlang:start_timer(zraft_consensus:get_election_timeout()*2, self(), pending),
+    State#state{pending = NewTimer}.
+
+
 ping(State = #state{acc_upto = To, timer = Timer, timeout = Timeout}) ->
     cancel_timer(Timer),
     NewTimer = erlang:start_timer(Timeout div 2, self(), session_timeout),
@@ -143,14 +251,23 @@ ping(State = #state{acc_upto = To, timer = Timer, timeout = Timeout}) ->
     write_to_raft(Req, State),
     State#state{timer = NewTimer}.
 
-connect(State = #state{timeout = Timeout, session = Session, timer = Timer}) ->
+connect(State = #state{connected = true}) ->
+    State;
+connect(State = #state{timeout = Timeout, timer = Timer}) ->
     cancel_timer(Timer),
-    Leader = zraft_session_obj:leader(Session),
-    Mref = erlang:monitor(process, Leader),
-    NewTimer = erlang:start_timer(Timeout, self(), connect_timeout),
-    Req = #swrite{message_id = ?CLIENT_CONNECT, acc_upto = 0, from = self(), data = Timeout},
-    write_to_raft(Req, State),
-    State#state{leader_mref = Mref, timer = NewTimer}.
+    case install_leader(State) of
+        {false,State1}->
+            State1;
+        {true,State1}->
+            Req = #swrite{message_id = ?CLIENT_CONNECT, acc_upto = 0, from = self(), data = Timeout},
+            write_to_raft(true,Req, State),
+            State1
+    end.
+
+stop_session(State = #state{acc_upto = To, timer = Timer}) ->
+    cancel_timer(Timer),
+    Req = #swrite{message_id = ?CLIENT_CLOSE, from = self(), data = <<>>, acc_upto = To},
+    write_to_raft(true,Req, State).
 
 
 %%send timeout error to client and clean temporary data
@@ -172,8 +289,8 @@ request_timeout(TRef, ReqRef, State = #state{requests = Requests}) ->
     end.
 
 %%clean all temporary data.
-caller_down(Caller, MRef, State = #state{requests = Requests,watchers = Watchers}) ->
-    ets:delete(Watchers,Caller),
+caller_down(Caller, MRef, State = #state{requests = Requests, watchers = Watchers}) ->
+    ets:delete(Watchers, Caller),
     case ets:lookup(Requests, MRef) of
         [{MRef, _, _From, TRef, _}] ->
             cancel_timer(TRef),
@@ -183,7 +300,7 @@ caller_down(Caller, MRef, State = #state{requests = Requests,watchers = Watchers
             case ets:lookup(Requests, ID) of
                 [{ID, _Req, _From, TRef, MRef, _E}] ->
                     cancel_timer(TRef),
-                    ets:delete(Requests,ID),
+                    ets:delete(Requests, ID),
                     ets:delete(Requests, MRef),
                     update_upto(State);
                 _ ->
@@ -209,12 +326,25 @@ handle_query({Query, Watch, Timeout}, From, State = #state{requests = Requests, 
 
 repeat_read(Ref, State = #state{requests = Requests, epoch = E}) ->
     case ets:lookup(Requests, Ref) of
-        [{Ref, Req, _From, _TRef, _E0}] ->
+        [{Ref, Req, _From, _TRef, E0}] when E0 < E ->
             ets:update_element(Requests, Ref, {5, E}),
             read_from_raft(Ref, Req, State),
-            {noreply, State};
+            State;
         _ ->
-            {noreply, State}
+            State
+    end.
+
+read_reply(Ref, Result, State = #state{requests = Requests}) ->
+    case ets:lookup(Requests, Ref) of
+        [{Ref, Req, From, TRef, _Epoch}] ->
+            register_watcher(Req, State),
+            gen_server:reply(From, Result),
+            erlang:demonitor(Ref),
+            cancel_timer(TRef),
+            ets:delete(Requests, Ref),
+            State;
+        _ ->
+            State
     end.
 
 handle_write({Request, Temporary, Timeout}, From, State = #state{message_id = ID, acc_upto = To, requests = Requests, epoch = E}) ->
@@ -228,45 +358,14 @@ handle_write({Request, Temporary, Timeout}, From, State = #state{message_id = ID
     {noreply, State#state{message_id = ID + 1}}.
 repeat_write(ID, State = #state{requests = Requests, acc_upto = To, epoch = E}) ->
     case ets:lookup(Requests, ID) of
-        [{ID, Req, _From, _TRef, _MRef, _E0}] ->
+        [{ID, Req, _From, _TRef, _MRef, E0}] when E0 < E ->
             ets:update_element(Requests, ID, {6, E}),
             Req1 = Req#swrite{acc_upto = To},
             write_to_raft(Req1, State),
-            {noreply, State};
+            State;
         _ ->
-            {noreply, State}
+            State
     end.
-
-write_to_raft(Req, #state{session = Session}) ->
-    Leader = zraft_session_obj:leader(Session),
-    zraft_consensus:send_swrite(Leader, Req).
-read_from_raft(Ref, {Query, Watch, Timeout}, #state{session = Session}) ->
-    Leader = zraft_session_obj:leader(Session),
-    zraft_consensus:async_query(Leader, {read, Ref}, Watch, Query, Timeout).
-
-read_reply(Ref, Result, State = #state{requests = Requests}) ->
-    Reply = case Result of
-                {ok, R1} ->
-                    R1;
-                _ ->
-                    Result
-            end,
-    case ets:lookup(Requests, Ref) of
-        [{Ref, Req, From, TRef, _Epoch}] ->
-            register_watcher(Req, State),
-            gen_server:reply(From, Reply),
-            erlang:demonitor(Ref),
-            cancel_timer(TRef),
-            ets:delete(Requests, Ref),
-            {noreply, State};
-        _ ->
-            {noreply, State}
-    end.
-
-register_watcher({_, false, _}, _State) ->
-    ok;
-register_watcher({_, Watch, _}, #state{watchers = Watchers}) ->
-    ets:insert(Watchers, Watch).
 
 write_reply(ID, Result, State = #state{requests = Requests}) ->
     case ets:lookup(Requests, ID) of
@@ -277,10 +376,33 @@ write_reply(ID, Result, State = #state{requests = Requests}) ->
             ets:delete(Requests, ID),
             ets:delete(Requests, MRef),
             State1 = update_upto(State),
-            {noreply, State1};
+            State1;
         _ ->
-            {noreply, State}
+            State
     end.
+
+write_to_raft(Req, State = #state{connected = Connected}) ->
+    write_to_raft(Connected,Req,State).
+
+write_to_raft(false,_Req,_State) ->
+    ok;
+write_to_raft(_,_Req, #state{pending = P}) when P /= false->
+    ok;
+write_to_raft(_,Req, #state{session = Session}) ->
+    Leader = zraft_session_obj:leader(Session),
+    zraft_consensus:send_swrite(Leader, Req).
+read_from_raft(_,_, #state{pending = P}) when P /= false->
+    ok;
+read_from_raft(_,_, #state{connected = false}) ->
+    ok;
+read_from_raft(Ref, {Query, Watch, Timeout}, #state{session = Session}) ->
+    Leader = zraft_session_obj:leader(Session),
+    zraft_consensus:async_query(Leader, {read, Ref}, Watch, Query, Timeout).
+
+register_watcher({_, false, _}, _State) ->
+    ok;
+register_watcher({_, Watch, _}, #state{watchers = Watchers}) ->
+    ets:insert(Watchers, Watch).
 
 update_upto(State = #state{requests = Requests, message_id = ID}) ->
     case ets:next(Requests, 0) of
@@ -291,31 +413,51 @@ update_upto(State = #state{requests = Requests, message_id = ID}) ->
             ping(State1)
     end.
 
-change_leader(failed, State = #state{session = Session}) ->
-    case zraft_session_obj:fail(Session) of
+
+set_leader(NewLeader, State = #state{session = Session,pending = Pending}) ->
+    if
+        Pending /= false->
+            NewSession = zraft_session_obj:set_leader(NewLeader,Session),
+            install_leader(State#state{session = NewSession});
+        true->
+            case zraft_session_obj:leader(Session) of
+                NewLeader ->
+                    {true,State};
+                _ ->
+                    NewSession = zraft_session_obj:set_leader(NewLeader,Session),
+                    install_leader(State#state{session = NewSession})
+            end
+    end.
+
+change_leader(failed, State) ->
+    Fun = fun zraft_session_obj:fail/1,
+    change_leader_fn(Fun, State);
+change_leader(undefined, State) ->
+    Fun = fun zraft_session_obj:next/1,
+    change_leader_fn(Fun, State);
+change_leader(NewLeader, State = #state{session = Session}) ->
+    case zraft_session_obj:leader(Session) of
+        NewLeader ->
+            {false,State};
+        _ ->
+            Fun = fun(S) ->
+                zraft_session_obj:change_leader(NewLeader, S) end,
+            change_leader_fn(Fun, State)
+    end.
+
+change_leader_fn(Fun, State = #state{session = Session}) ->
+    case Fun(Session) of
+        {error, etimeout} ->
+            State1 = pending(State),
+            {false, State1};
         {error, all_failed} ->
             exit({error, no_peer_available});
         NewSession ->
             State1 = State#state{session = NewSession},
             install_leader(State1)
-    end;
-change_leader(undefined, State = #state{session = Session}) ->
-    NewSession = zraft_session_obj:next(Session),
-    State1 = State#state{session = NewSession},
-    install_leader(State1);
-
-change_leader(NewLeader, State = #state{session = Session}) ->
-    case zraft_session_obj:leader(Session) of
-        NewLeader ->
-            State;
-        _ ->
-            NewSession = zraft_session_obj:set_leader(NewLeader, Session),
-            State1 = State#state{session = NewSession},
-            install_leader(State1)
     end.
 
 install_leader(State = #state{session = Session, leader_mref = PrevRef, epoch = E}) ->
-    trigger_all_watcher(State),
     case PrevRef of
         undefined ->
             ok;
@@ -323,17 +465,27 @@ install_leader(State = #state{session = Session, leader_mref = PrevRef, epoch = 
             erlang:demonitor(PrevRef)
     end,
     Leader = zraft_session_obj:leader(Session),
-    Mref = erlang:monitor(process, Leader),
-    State1 = State#state{leader_mref = Mref, epoch = E + 1},
-    ping(State1).
+    MRef = erlang:monitor(process, Leader),
+    receive
+        {'DOWN', MRef, process, _, _} ->
+            change_leader(failed, State)
+    after 0 ->
+        if
+            State#state.pending /= false->
+                cancel_timer(State#state.pending);
+            true->
+                ok
+        end,
+        trigger_all_watcher(State),
+        {true, State#state{leader_mref = MRef, epoch = E + 1,pending = false}}
+    end.
 
 trigger_all_watcher(#state{watchers = Watchers}) ->
-    All = ets:tab2list(Watchers),
-    lists:foreach(fun({Caller, Watch}) ->
-        Caller ! #swatch_trigger{ref = Watch} end, All),
+    ets:foldl(fun({Caller, Watch}, Acc) ->
+        Caller ! #swatch_trigger{ref = Watch, reason = change_leader}, Acc end, 0, Watchers),
     ets:delete_all_objects(Watchers).
 
-restart_requets(State = #state{connected = false}) ->
+restart_requets(State = #state{connected = false})->
     connect(State);
 restart_requets(State = #state{requests = Requests, epoch = E}) ->
     MatchWrite = [{{'$1', '_', '_', '_', '_', '$2'}, [{'<', '$2', {const, E}}], ['$1']}],
@@ -351,7 +503,7 @@ restart_requets(State = #state{requests = Requests, epoch = E}) ->
             State
     end.
 
-cancel_timer(#state{timer = Timer}) ->
+cancel_timer(Timer) ->
     if
         Timer /= undefined ->
             erlang:cancel_timer(Timer);
