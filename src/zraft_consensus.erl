@@ -982,14 +982,16 @@ start_election(State) ->
         back_end = BackEnd,
         log_state = LogState,
         quorum_counter = Counter,
-        state_fsm = StateFSM
+        state_fsm = StateFSM,
+        last_hearbeat = LastHear
     }=State,
     NextTerm = Term + 1,
     #log_descr{last_index = LastIndex, last_term = LastTerm} = LogState,
     VoteRequest = #vote_request{epoch = Epoch, term = NextTerm, from = peer(PeerID), last_index = LastIndex, last_term = LastTerm},
     to_all_peer_direct(VoteRequest, State),
     Leader /= undefined andalso
-        ?INFO(State, "Start for election in term ~p old leader was ~p", [NextTerm, Leader]),
+        ?INFO(State, "Start for election in term ~p old leader was ~p.I Does't hear scince ~p.",
+            [NextTerm, Leader,calendar:now_to_datetime(LastHear)]),
     ok = zraft_fs_log:update_raft_meta(
         Log,
         #raft_meta{id = PeerID, voted_for = PeerID, back_end = BackEnd, current_term = NextTerm}
