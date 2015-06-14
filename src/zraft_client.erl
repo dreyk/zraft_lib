@@ -51,7 +51,7 @@
     Conf :: list(zraft_consensus:peer_id())|zraft_consensus:peer_id(),
     Reason :: no_peers|term().
 %% @doc Create light session for read/write operations.
-%% @equiv light_session(Conf,zraft_consensus:get_election_timeout())
+%% @equiv light_session(Conf,zraft_consensus:get_election_timeout()*2,zraft_consensus:get_election_timeout())
 %% @end
 light_session(Conf) ->
     E = zraft_consensus:get_election_timeout(),
@@ -289,8 +289,11 @@ peer_execute_sessions(Session, Fun, Start, Timeout) ->
             {Result,Session};
         {leader, NewLeader} when NewLeader /= undefined ->
             case zraft_session_obj:change_leader(NewLeader,Session) of
-                {error,Err}->
-                    {error,Err};
+                {error, etimeout} ->
+                    timer:sleep(zraft_consensus:get_election_timeout()),
+                    {continue,Session};
+                {error, all_failed} ->
+                    {error, all_failed};
                 Session1->
                     {continue,Session1}
             end;

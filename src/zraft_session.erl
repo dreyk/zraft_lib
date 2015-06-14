@@ -63,7 +63,8 @@
     timer,
     timeout,
     pending,
-    connected}).
+    connected,
+    last_send}).
 
 
 -spec query(session(), term(), timeout()) -> {ok, term()}.
@@ -131,7 +132,7 @@ handle_info(#swrite_error{sequence = Sequence, error = not_leader, leader = NewL
         {true, State1} ->
             if
                 Sequence == ?CLIENT_PING ->
-                    NewState = update_upto(State1);%%send new ping if it's necessary
+                    NewState = repeat_ping(State1);
                 Sequence == ?CLIENT_CONNECT ->
                     NewState = connect(State1);
                 is_integer(Sequence) ->
@@ -140,16 +141,18 @@ handle_info(#swrite_error{sequence = Sequence, error = not_leader, leader = NewL
             {noreply, NewState}
     end;
 
-handle_info(#swrite_reply{sequence = ?CLIENT_PING, data = Timer}, State = #state{timer = Timer}) ->
-    %%State1 = update_upto(State),
-    {noreply, State};
+
 handle_info(#swrite_reply{sequence = ?CLIENT_PING}, State) ->
     {noreply, State};
 
+handle_info(#swrite_reply{sequence = ?CLIENT_CONNECT}, State = #state{connected = true}) ->
+    %%we can send connect request twice
+    {noreply,State};
 handle_info(#swrite_reply{sequence = ?CLIENT_CONNECT}, State = #state{epoch = E,timer = TRef}) ->
     cancel_timer(TRef),
-    State1 = restart_requets(State#state{connected = true,epoch = E+1}),
-    {noreply, State1};
+    State1 = restart_requets(State#state{connected = true,epoch = E+1,timer=undefined}),
+    State2 = ping(State1),
+    {noreply, State2};
 
 handle_info(#swrite_reply{sequence = ID, data = Result}, State) when is_integer(ID) ->
     NewState = write_reply(ID, Result, State),
@@ -216,9 +219,9 @@ handle_info({timeout, TimerRef, pending}, State = #state{pending = TimerRef}) ->
             State2 = restart_requets(State1),
             {noreply,State2}
     end;
-handle_info({timeout, TimerRef, session_timeout}, State = #state{timer = TimerRef}) ->
-    lager:warning("Session timeout"),
-    {stop, pong_timeout, State};
+handle_info({timeout, TimerRef, ping_timeout}, State = #state{timer = TimerRef}) ->
+    State1 = ping(State),
+    {noreply, State1};
 handle_info({timeout, TimerRef, connect_timeout}, State = #state{timer = TimerRef}) ->
     lager:warning("Connection timeout"),
     {stop, connection_timeout, State};
@@ -244,12 +247,22 @@ pending(State) ->
     State#state{pending = NewTimer}.
 
 
-ping(State = #state{acc_upto = To, timer = Timer, timeout = Timeout}) ->
+ping(State = #state{timer = Timer, timeout = Timeout,last_send = Last}) ->
     cancel_timer(Timer),
-    NewTimer = erlang:start_timer(Timeout div 2, self(), session_timeout),
-    Req = #swrite{message_id = ?CLIENT_PING, acc_upto = To, from = self(), data = NewTimer},
+    PingTimeout = Timeout div 2,
+    case zraft_util:is_expired(Last,PingTimeout) of
+        true->
+            NewTimer = erlang:start_timer(PingTimeout, self(),ping_timeout),
+            repeat_ping(State#state{timer = NewTimer});
+        {false,T1}->
+            NewTimer = erlang:start_timer(T1, self(),ping_timeout),
+            State#state{timer = NewTimer}
+
+    end.
+repeat_ping(State = #state{acc_upto = To})->
+    Req = #swrite{message_id = ?CLIENT_PING, acc_upto = To, from = self(), data = <<>>},
     write_to_raft(Req, State),
-    State#state{timer = NewTimer}.
+    State#state{last_send = os:timestamp()}.
 
 connect(State = #state{connected = true}) ->
     State;
@@ -261,7 +274,7 @@ connect(State = #state{timeout = Timeout, timer = Timer}) ->
         {true,State1}->
             Req = #swrite{message_id = ?CLIENT_CONNECT, acc_upto = 0, from = self(), data = Timeout},
             write_to_raft(true,Req, State),
-            State1
+            State1#state{last_send = os:timestamp()}
     end.
 
 stop_session(State = #state{acc_upto = To, timer = Timer}) ->
@@ -355,14 +368,14 @@ handle_write({Request, Temporary, Timeout}, From, State = #state{message_id = ID
     MRef = erlang:monitor(process, Caller),
     ets:insert(Requests, {ID, Req, From, TRef, MRef, E}),
     ets:insert(Requests, {MRef, ID}),
-    {noreply, State#state{message_id = ID + 1}}.
+    {noreply, State#state{message_id = ID + 1,last_send = os:timestamp()}}.
 repeat_write(ID, State = #state{requests = Requests, acc_upto = To, epoch = E}) ->
     case ets:lookup(Requests, ID) of
         [{ID, Req, _From, _TRef, _MRef, E0}] when E0 < E ->
             ets:update_element(Requests, ID, {6, E}),
             Req1 = Req#swrite{acc_upto = To},
             write_to_raft(Req1, State),
-            State;
+            State#state{last_send = os:timestamp()};
         _ ->
             State
     end.
@@ -407,19 +420,20 @@ register_watcher({_, Watch, _}, #state{watchers = Watchers}) ->
 update_upto(State = #state{requests = Requests, message_id = ID}) ->
     case ets:next(Requests, 0) of
         K when is_integer(K) ->
-            State#state{acc_upto = K};
+            State#state{acc_upto = K-1};
         _ ->
-            State1 = State#state{acc_upto = ID - 1},
-            ping(State1)
+            State#state{acc_upto = ID - 1}
     end.
 
 
 set_leader(NewLeader, State = #state{session = Session,pending = Pending}) ->
     if
         Pending /= false->
+            %%if  pending state just resend all reset pending
             NewSession = zraft_session_obj:set_leader(NewLeader,Session),
             install_leader(State#state{session = NewSession});
         true->
+            %%it's not pending state. change leader then nessary
             case zraft_session_obj:leader(Session) of
                 NewLeader ->
                     {true,State};
@@ -435,9 +449,11 @@ change_leader(failed, State) ->
 change_leader(undefined, State) ->
     Fun = fun zraft_session_obj:next/1,
     change_leader_fn(Fun, State);
-change_leader(NewLeader, State = #state{session = Session}) ->
+change_leader(NewLeader, State = #state{session = Session,pending = Pending}) ->
     case zraft_session_obj:leader(Session) of
-        NewLeader ->
+        NewLeader when Pending==false->
+            {true,State};
+        NewLeader->
             {false,State};
         _ ->
             Fun = fun(S) ->
@@ -490,18 +506,13 @@ restart_requets(State = #state{connected = false})->
 restart_requets(State = #state{requests = Requests, epoch = E}) ->
     MatchWrite = [{{'$1', '_', '_', '_', '_', '$2'}, [{'<', '$2', {const, E}}], ['$1']}],
     W = ets:select(Requests, MatchWrite),
-    lists:foreach(fun(ID) ->
-        repeat_write(ID, State) end, W),
+    State1 = lists:foldl(fun(ID,StateAcc1) ->
+        repeat_write(ID, StateAcc1) end,State, W),
     MatchRead = [{{'$1', '_', '_', '_', '$2'}, [{'<', '$2', {const, E}}], ['$1']}],
     R = ets:select(Requests, MatchRead),
-    lists:foreach(fun(Ref) ->
-        repeat_read(Ref, State) end, R),
-    case W of
-        [] ->
-            ping(State);
-        _ ->
-            State
-    end.
+    State2 = lists:foldl(fun(Ref,StateAcc2) ->
+        repeat_read(Ref, StateAcc2) end,State1,R),
+    State2.
 
 cancel_timer(Timer) ->
     if

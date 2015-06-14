@@ -469,7 +469,7 @@ start_hearbeat_timer(State=#state{request_time = ReqTime}) ->
                ReqTime==undefined->
                    ElectionTimeout;
                true->
-                   case round(timer:now_diff(os:timestamp(),ReqTime)/1000) of
+                   case (timer:now_diff(os:timestamp(),ReqTime) div 1000) of
                        T1 when T1>ElectionTimeout->
                            0;
                        T1->
