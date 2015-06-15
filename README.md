@@ -149,7 +149,7 @@ Parameters:
 Return:
 - `{Result,LeaderPeerID}` - Result is result of query. LeaderPeerID is current leader ID.
 - `{error,Error}` - Operation has failed. Typical reason is timeout,noproc.
-- 
+
 Or read data using light session object:
 
 ```
@@ -170,7 +170,7 @@ zraft_client:set_new_conf(Peer,NewPeers,OldPeers,Timeout).
 
 ## Use Session:
 
-You can create long lived session to communicate this RAFT cluster.
+You can create long lived session to RAFT cluster. It can be used triggers and temporary datas.
 
 ```
 zraft_session:start_link(PeerOrPeers,SessionTimeout)->{ok,Session}.
