@@ -71,7 +71,7 @@ expire_session(Session,Dict)->
         end end,{[],[]},Dict),
     {ok,T,dict:from_list(D)}.
 
-%% @doc Prepare FSM to take snapshot asycn if it's possible otherwice return function to take snapshot immediatly
+%% @doc Prepare FSM to take snapshot async if it's possible otherwice return function to take snapshot immediatly
 snapshot(Dict)->
     Fun = fun(ToDir)->
         File = filename:join(ToDir,"state"),

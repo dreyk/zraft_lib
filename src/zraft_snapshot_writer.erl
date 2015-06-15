@@ -163,7 +163,7 @@ setup() ->
     zraft_util:make_dir(?DATA_DIR),
     ok.
 clear_setup(_) ->
-    zraft_util:del_dir(?DATA_DIR),
+    %%zraft_util:del_dir(?DATA_DIR),
     ok.
 
 write_snapshot_test_() ->
@@ -206,8 +206,9 @@ write() ->
                 ?assert(false)
         end,
         Res = zip:unzip(ResultFile),
-        ?assertMatch({ok,["test-snaphot/dump-1/info",
-            "test-snaphot/dump-1/data/dump"]},Res),
+        ?assertMatch({ok, [_, _]}, Res),
+        {ok, ResData} = Res,
+        ?assertMatch(["test-snaphot/dump-1/data/dump", "test-snaphot/dump-1/info"], lists:sort(ResData)),
         {ok,SInfo} = read_snapshot_info("test-snaphot/dump-1"),
         ?assertMatch(#snapshot_info{index = 10,conf = [],term = 1,conf_index = 1},SInfo),
         {ok,C2} = file:read_file("test-snaphot/dump-1/data/dump"),
