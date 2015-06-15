@@ -41,7 +41,8 @@
     random/2,
     now_millisec/0,
     timestamp_millisec/1,
-    count_list/1
+    count_list/1,
+    cycle_exp/1
 ]).
 
 now_millisec()->
@@ -185,7 +186,18 @@ is_expired(Start,Timeout)->
         T2 when T2 >= T1 ->
             true;
         T2->
-            {false,(T1-T2) div 1000}
+            {false,((T1-T2) div 1000)+1}
+    end.
+
+cycle_exp(T)->
+    cycle_exp(os:timestamp(),T).
+cycle_exp(Start,T)->
+    case is_expired(Start,T) of
+        true->
+            ok;
+        {false,T1}->
+            %%io:format("s ~p~n",[T1]),
+            cycle_exp(os:timestamp(),T1)
     end.
 
 start_app(App)->

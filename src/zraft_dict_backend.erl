@@ -22,8 +22,18 @@
 
 -behaviour(zraft_backend).
 
--export([init/1,query/2,apply_data/2,snapshot/1,snapshot_done/1,snapshot_failed/2,install_snapshot/2]).
+-export([
+    init/1,
+    query/2,
+    apply_data/2,
+    apply_data/3,
+    snapshot/1,
+    snapshot_done/1,
+    snapshot_failed/2,
+    install_snapshot/2,
+    expire_session/2]).
 
+-record(session,{v,s}).
 
 %% @doc init backend FSM
 init(_) ->
@@ -35,19 +45,31 @@ query(Fn,Dict) when is_function(Fn)->
 query(Key,Dict) ->
     case dict:find(Key,Dict) of
         error->
-            {ok,not_found};
+            {ok,[Key],not_found};
+        {ok,#session{v=V}}->
+            {ok,[Key],{ok,V}};
         V->
-            {ok,V}
+            {ok,[Key],V}
     end.
 
 %% @doc write data to FSM
 apply_data({K,V},Dict)->
     Dict1 = dict:store(K,V,Dict),
-    {ok,Dict1};
-apply_data(List,Dict) when is_list(List)->
-    Dict1 = lists:foldl(fun({K,V},Acc)->
-        dict:store(K,V,Acc) end,Dict,List),
-    {ok,Dict1}.
+    {ok,[K],Dict1}.
+
+apply_data({K,V},Session,Dict)->
+    Dict1 = dict:store(K,#session{v=V,s = Session},Dict),
+    {ok,[K],Dict1}.
+
+expire_session(Session,Dict)->
+    {T,D}=dict:fold(fun(K,V,{A1,A2})->
+        case V of
+            #session{s = Session}->
+                {[K|A1],A2};
+            _->
+                {A1,[{K,V}|A2]}
+        end end,{[],[]},Dict),
+    {ok,T,dict:from_list(D)}.
 
 %% @doc Prepare FSM to take snapshot asycn if it's possible otherwice return function to take snapshot immediatly
 snapshot(Dict)->

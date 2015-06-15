@@ -43,6 +43,12 @@
 -define(ELECTION_TIMEOUT_PARAM,election_timeout).
 -define(ELECTION_TIMEOUT,500).
 
+-define(CLIENT_PING,'$zraftc_ping').
+-define(CLIENT_CONNECT,'$zraftc_connect').
+-define(CLIENT_CLOSE,'$zraftc_close').
+-define(EXPIRE_SESSION,'$zraft_expire').
+-define(DISCONNECT_MSG, disconnected).
+
 -record(snapshot_info,{index=0,term=0,conf_index=0,conf=?BLANK_CONF}).
 
 -record(log_op_result,{log_state,last_conf,result}).
@@ -57,15 +63,17 @@
 
 -record(log_descr,{first_index,last_index,last_term,commit_index}).
 
--record(leader_read_request,{from,request}).
+-record(read,{from,request,watch=false,global_time}).
 
 -record(peer_start,{epoch,term,allow_commit,leader,back_end,log_state,snapshot_info,conf,conf_state,state_name,proxy_peer_stats=[]}).
 -record(proxy_peer_stat,{peer_state,is_snapshoting}).
--record(swrite,{data,message_id,acc_upto,from,expire_at}).%%write in session
+-record(swrite,{data,message_id,acc_upto,from,temporary=false}).%%write in session
 -record(write,{data,from}).%%optimistic write
 
 -record(swrite_reply,{sequence,data}).
 -record(swrite_error,{sequence,leader,error}).
+-record(sread_reply,{data,ref}).
+-record(swatch_trigger,{ref,reason}).
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").

@@ -129,7 +129,6 @@ handle_cast(stop, State) ->
     {stop, normal, State};
 
 handle_cast(start_peer, State) ->
-    maybe_start_remote(State),
     {noreply, State};
 
 handle_cast({peer_up,From},State=#state{request_ref = Ref})->
@@ -469,7 +468,7 @@ start_hearbeat_timer(State=#state{request_time = ReqTime}) ->
                ReqTime==undefined->
                    ElectionTimeout;
                true->
-                   case round(timer:now_diff(os:timestamp(),ReqTime)/1000) of
+                   case (timer:now_diff(os:timestamp(),ReqTime) div 1000) of
                        T1 when T1>ElectionTimeout->
                            0;
                        T1->
@@ -489,14 +488,6 @@ cancel_timer(undefined) ->
 cancel_timer(Ref) ->
     zraft_util:gen_server_cancel_timer(Ref).
 
-maybe_start_remote(#state{back_end = BackEnd, peer = Peer,raft = Raft}) ->
-    case Raft of
-        {ID,_} when ID==Peer#peer.id ->
-            ok;
-        _ ->
-            zraft_peer_route:start_peer(Peer#peer.id, BackEnd),
-            ok
-    end.
 
 start_copy_snapshot(#install_snapshot_reply{port = Port, addr = Addr},
     State = #state{snapshot_progres = P}) ->
