@@ -990,8 +990,8 @@ start_election(State) ->
     VoteRequest = #vote_request{epoch = Epoch, term = NextTerm, from = peer(PeerID), last_index = LastIndex, last_term = LastTerm},
     to_all_peer_direct(VoteRequest, State),
     Leader /= undefined andalso
-        ?INFO(State, "Start for election in term ~p old leader was ~p.I Does't hear scince ~p.",
-            [NextTerm, Leader,calendar:now_to_datetime(LastHear)]),
+        ?INFO(State, "Start for election in term ~p old leader was ~p.I don't hear anything from it scince ~p, elapsed ~p.",
+            [NextTerm, Leader,calendar:now_to_datetime(LastHear),(timer:now_diff(os:timestamp(),LastHear) div 1000)]),
     ok = zraft_fs_log:update_raft_meta(
         Log,
         #raft_meta{id = PeerID, voted_for = PeerID, back_end = BackEnd, current_term = NextTerm}
@@ -1216,7 +1216,7 @@ start_timer(State = #state{id = ID, timer = Timer, election_timeout = Timeout}) 
         true ->
             gen_fsm:cancel_timer(Timer)
     end,
-    Timeout1 = round(zraft_util:random(ID, Timeout)*1.5) + Timeout,
+    Timeout1 = zraft_util:random(ID, Timeout) + round(1.5*Timeout),
     NewTimer = gen_fsm:send_event_after(Timeout1, timeout),
     State#state{timer = NewTimer}.
 
