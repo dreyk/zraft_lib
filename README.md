@@ -70,6 +70,7 @@ zraft_client:create(Peers,BackEnd).
 Parameters:
 - `Peers` - lists of cluster peers, e.g. `[{test1,'test1@host1'},{test1,'test2@host2'},{other_test,'test3@host3'}]`.
 - `BackEnd` - module name used for apply user requests.
+
 Possible return values:
  - `{ok,Peers}` - cluster has created.
  - `{error,{PeerID,Error}}` - can't create PeerID, error is Error.
@@ -89,8 +90,8 @@ zraft_client:light_session(PeerID,FailTimeout,ElectionTimeout).
 ```
 Parameters:
 - `PeerID` - ID of peer from luster.
-- `FailTimeout` - If we detect that peer has failed,then we will not send any request to this node during this Interval.
-- `ElectionTimeout` - If we detect that peer isn't leader,then wee not send any request to this node during this Interval.
+- `FailTimeout` - If we detect that peer has failed,then we will not send any request to this peer during this Interval.
+- `ElectionTimeout` - If we detect that peer isn't leader,then wee not send any request to this peer during this Interval.
 
 Possible return values:
 - `LightSession` - Light Session object.
@@ -100,28 +101,66 @@ Create session by list PeerID:
 ```
 zraft_client:light_session(PeersList,FailTimeout,ElectionTimeout).
 ```
-This function will not try configuration from cluster.
+This function will not try read configuration from cluster.
 
 #### Write operation.
 
 ```
-zraft_client:write(Raft,Data,Timeout).
+zraft_client:write(PeerID,Data,Timeout).
 
 ```
 
 Parameters:
-- `Raft` - PeerID or LightSessionObject.
+- `PeerID` - PeerID.
 - `Data` - Request Data specific for BackEndModule.
 
+Return:
+- `{Result,LeaderPeerID}` - Result is result of applying Data to BackEndModule. LeaderPeerID is current leader ID.
+- `{error,Error}` - Operation has failed. Typical reason is timeout,noproc.
 
+Write using session object.
+```
+zraft_client:write(LaghtSessionObj,Data,Timeout).
 
+```
+
+Parameters:
+- `LightSessionObj` - Light Sesssion Object.
+- `Data` - Request Data specific for BackEndModule.
+
+Return:
+- `{Result,LightSessionObj}` - Result is result of applying Data to BackEndModule. LightSessionObj is update session object.
+- `{error,Error}` - Operation has failed. Typical reason is timeout,all_failed. `all_failed` means,there are not alive peers. 
+
+```
+WARNING: during this request Data may be applyed to backend module twice.
+```
 
 #### Read request:
 
 ```
-zraft_client:query(Raft,Query,Timeout).
+zraft_client:query(PeerID,Query,Timeout).
 
 ```
+Parameters:
+- `PeerID` - PeerID.
+- `Query` - Request Data specific for backend module.
+
+Return:
+- `{Result,LeaderPeerID}` - Result is result of query. LeaderPeerID is current leader ID.
+- `{error,Error}` - Operation has failed. Typical reason is timeout,noproc.
+- 
+Or read data using light session object:
+
+```
+zraft_client:query(LaghtSessionObj,Query,Timeout).
+
+```
+
+Return:
+- `{Result,LightSessionObj}` - Result is result of query. LightSessionObj is update session object.
+- `{error,Error}` - Operation has failed. Typical reason is timeout,all_failed. `all_failed` means,there are not alive peers. 
+
 
 #### Change Configuration:
 
@@ -129,14 +168,47 @@ zraft_client:query(Raft,Query,Timeout).
 zraft_client:set_new_conf(Peer,NewPeers,OldPeers,Timeout).
 ```
 
-Please look at [zraft_client](http://github.com/dreyk/zraft_lib/blob/master/src/zraft_client.erl) for more details.
+## Use Session:
 
-Or just generate docs.
-
-```
-./rebar doc
+You can create long lived session to communicate this RAFT cluster.
 
 ```
+zraft_session:start_link(PeerOrPeers,SessionTimeout)->{ok,Session}.
+```
+
+If first parameter is PeerID other available Peer will be readed from that Peer.
+
+#### Write Data and Ephemeral data.
+
+```
+zraft_session:write(Session,Data, Temporary, Timeout).
+```
+If Temporary is true then data will be deleted after session wil be expired.
+
+#### Read Data and Set watchers
+
+```
+zraft_session:query(Session,Query,Watch,Timeout).
+```
+
+Watch is trigger reference that will be triggered after future changes.Trigger will be triggered only once, if you need new trigger you must data again.
+
+Example:
+```
+zraft_session:query(S1,1,my_watcher,1000).
+%%Result = not_found.
+zraft_session:write(S2,{1,2},1000).
+receive
+     {swatch_trigger,my_watcher,Reason}->
+          %%Data changed. Change Reason is data_chaged or leader chaged.
+          ok
+end.
+zraft_session:query(S1,1,my_watcher,1000). %%watch again
+```
+
+
+
+
 
 
 ##Standalone Server.
