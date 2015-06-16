@@ -46,7 +46,7 @@
     when Result :: term().
 
 -callback expire_session(Session :: zraft_consensus:csession(), State :: state())->
-    {ok,state()}.
+    {ok,State::state()}|{ok,TriggerKesy::keys(),State::state()}.
 
 %% Prepare FSM to take snapshot async if it's possible otherwice return function to take snapshot immediatly
 -callback snapshot(State :: state())->{sync, snapshot_fun(), state()} | {async, snapshot_fun(), state()}.

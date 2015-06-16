@@ -164,8 +164,10 @@ query(PeerID, Query, Timeout) ->
 query(PeerID,WatchRef,Query, Timeout) ->
     sync_leader_read_request(PeerID, read_request, [WatchRef,Query], Timeout).
 
+-spec async_query(peer_id(),term(),term(), timeout()) -> ok.
 async_query(PeerID,From,Query,Timeout)->
     async_leader_read_request(PeerID,From,read_request, [false,Query], Timeout).
+-spec async_query(peer_id(),term(),term(),term(), timeout()) -> ok.
 async_query(PeerID,From,WatchRef,Query,Timeout)->
     async_leader_read_request(PeerID,From,read_request, [WatchRef,Query], Timeout).
 
@@ -232,7 +234,7 @@ initial_bootstrap(P) ->
     gen_fsm:sync_send_event(P, bootstrap).
 
 
--spec sync_peer(from_peer_addr(), true|false) -> ok.
+-spec sync_peer(from_peer_addr(),{SyncType::atom(),ConfID::index(),term()}) -> ok.
 sync_peer(P,Sync) ->
     send_all_state_event(P,{sync_peer,Sync}).
 
@@ -244,7 +246,7 @@ maybe_step_down(P, Term) ->
 need_snapshot(Peer, NewReq) ->
     zraft_peer_route:cmd(Peer, NewReq).
 
--spec make_snapshot_info(from_peer_addr(), pid(), index()) -> ok.
+-spec make_snapshot_info(from_peer_addr(),{reference(),pid()}, index()) -> ok.
 make_snapshot_info(Peer, From, Index) ->
     send_event(Peer, {make_snapshot_info, From, Index}).
 
@@ -258,7 +260,7 @@ sync_leader_read_request(PeerID, Function, Args, Timeout) ->
     Req = #read_request{timeout = Timeout, function = Function, args = Args, start_time = Now},
     gen_fsm:sync_send_all_state_event(PeerID, Req, Timeout).
 
--spec async_leader_read_request(peer_id(),reference(), atom(), list(), timeout()) -> {ok, term()}|retry|{error, not_leader}|{error, term()}.
+-spec async_leader_read_request(peer_id(),term(), atom(), list(), timeout()) -> ok.
 async_leader_read_request(PeerID, From,Function, Args, Timeout) ->
     Now = os:timestamp(),
     Req = #read_request{timeout = Timeout, function = Function, args = [{self(),From}|Args], start_time = Now},
@@ -1175,7 +1177,7 @@ hasVote(#state{config = Conf, id = ID}) ->
     #config{state = ConfState, old_peers = OldPeers} = Conf,
     case ConfState of
         ?TRANSITIONAL_CONF ->
-            ordsets:is_element(ID, OldPeers) orelse ordsets:is_element(ID, ConfState#config.new_peers);
+            ordsets:is_element(ID, OldPeers) orelse ordsets:is_element(ID, Conf#config.new_peers);
         _ ->
             ordsets:is_element(ID, OldPeers)
     end.

@@ -78,7 +78,7 @@
     last_dir = []}).
 -record(snapshoter, {pid, seq, last_index, dir, mref, log_count, file, type, from}).
 
--spec start_link(zraft_concensus:from_peer_addr(), module()) -> {ok, pid()} | {error, term()}.
+-spec start_link(zraft_consensus:from_peer_addr(), module()) -> {ok, pid()} | {error, term()}.
 
 start_link(Raft, BackEnd) ->
     gen_server:start_link(?MODULE, [Raft, BackEnd], []).

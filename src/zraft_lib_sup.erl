@@ -38,8 +38,7 @@ start_link() ->
         MaxR :: non_neg_integer(), MaxT :: non_neg_integer()},
         [ChildSpec :: supervisor:child_spec()]
     }} |
-    ignore |
-    {error, Reason :: term()}).
+    ignore).
 init([]) ->
     Timeout = max(1,round(zraft_consensus:get_election_timeout()*4/1000)),
     SupFlags = {one_for_one,2,Timeout},

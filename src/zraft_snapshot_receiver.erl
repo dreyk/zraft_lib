@@ -214,7 +214,7 @@ close_sock(Sock) ->
     gen_tcp:close(Sock).
 
 code_change(_OldVsn, StateName, State, _Extra) ->
-    {ok, StateName, State, ?DATA_TIMEOUT}.
+    {ok, StateName, State}.
 
 listen_on(RAddr, IpAddr, State) ->
     SockOpts = [{ip, IpAddr}, binary, {packet, 4}, {reuseaddr, true}, {keepalive, true}, {backlog, 1024}, {active, false}],
