@@ -27,27 +27,25 @@
 -type read_cmd()::term().
 -type write_cmd()::term().
 -type snapshot_fun()::fun().
--type expire_action()::term().
--type watch()::true|false.
--type watchkey()::term().
+-type keys()::list(term()).
 
 %% init backend FSM
 -callback init(PeerId :: zraft_consensus:peer_id()) -> state().
 
 %% read/query data from FSM
--callback query(ReadCmd :: read_cmd(), State :: state()) -> {ok, Data :: [kv()]}.
+-callback query(ReadCmd :: read_cmd(), State :: state()) -> {ok, Data :: term()} | {ok,WatchKeys :: keys(),Data::term()}.
 
 %% write data to FSM
--callback apply_data(WriteCmd :: write_cmd(), State :: state()) -> {Result, State :: state()}
-    when Result :: {ok, Keys :: [term()]} | {error, Reason :: term()}.
--callback apply_data(write_cmd(),state()) -> {term(),state()} | {term(),list(watchkey()),state()}.
+-callback apply_data(WriteCmd :: write_cmd(), State :: state()) ->
+    {Result, State :: state()} | {Result,TriggerKesy::keys(),State::state()}
+    when Result :: term().
 
 %% write data to FSM
--callback apply_data(write_cmd(),zraft_consensus:csession(),state()) ->
-    {term(),state()} |
-    {term(),list(watchkey()),state()}.
+-callback apply_data(WriteCmd :: write_cmd(),Session :: zraft_consensus:csession(),State::state()) ->
+    {Result, State :: state()} | {Result,TriggerKesy::keys(),State::state()}
+    when Result :: term().
 
--callback expire_session(zraft_consensus:csession(),state())->
+-callback expire_session(Session :: zraft_consensus:csession(), State :: state())->
     {ok,state()}.
 
 %% Prepare FSM to take snapshot async if it's possible otherwice return function to take snapshot immediatly

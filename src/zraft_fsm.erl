@@ -37,7 +37,8 @@
     cmd/2,
     apply_commit/2,
     stop/1,
-    set_state/2
+    set_state/2,
+    stat/1
 ]).
 
 -include_lib("zraft_lib/include/zraft.hrl").
@@ -98,6 +99,10 @@ stop(P) ->
 cmd(FSM, Request) ->
     gen_server:cast(FSM, Request).
 
+-spec stat(pid())->#fsm_stat{}.
+stat(P)->
+    gen_server:call(P,stat).
+
 init([Raft, BackEnd]) ->
     gen_server:cast(self(), init),
     State = #state{
@@ -121,6 +126,11 @@ delayed_init(State = #state{raft = Raft}) ->
     }),
     {noreply, State1}.
 
+handle_call(stat,_From,State=#state{sessions = S,monitors = M,watchers = W})->
+    S1 = ets:info(S,size),
+    S2 = ets:info(M,size),
+    S3 = ets:info(W,size),
+    {reply,#fsm_stat{session_number = S2,tmp_count = S1,watcher_number = S3},State};
 handle_call(stop, _From, State) ->
     {stop, normal, ok, State};
 handle_call(_Request, _From, State) ->
@@ -331,7 +341,7 @@ apply_data(GlobalTime, Req = #swrite{}, BackEnd, UState, State) ->
     if
         MsgID == ?EXPIRE_SESSION ->
             case ets:lookup(Monitors, From) of
-                [{_, Data, _, _}] ->
+                [{_, _, _, _}] ->
                     expire_session(From, BackEnd, UState, State);
                 _ ->
                     %%already expired
@@ -432,9 +442,10 @@ acc_session(UpTo, From, #state{sessions = Sessions}) ->
     ets:select_delete(Sessions, Match).
 
 expire_sessions(GlobalTime, State = #state{monitors = Monitors, back_end = BackEnd, ustate = UState}) ->
-    Match = [{{'$1', '_', '$2', '_'}, [{'=<', '$2', {const, GlobalTime}}], ['$1']}],
+    Match = [{{'$1', '_', '$2', '_'}, [{'=<', '$2', {const, GlobalTime}}], [['$1','$2']]}],
     Del = ets:select(Monitors, Match),
-    UState1 = lists:foldl(fun(From, UStateAcc) ->
+    UState1 = lists:foldl(fun([From,ExpireAt], UStateAcc) ->
+        ?INFO(State,"Expire session ~p at ~p",[{From,ExpireAt},GlobalTime]),
         expire_session(From, BackEnd, UStateAcc, State)
     end, UState, Del),
     State#state{ustate = UState1}.
@@ -790,6 +801,8 @@ truncate_log(State = #state{raft = Raft, last_dir = SnapshotDir}) ->
 truncate_log(Raft, SnapshotInfo) ->
     zraft_consensus:truncate_log(Raft, SnapshotInfo).
 
+print_id(#state{raft = undefined}) ->
+    test;
 print_id(#state{raft = Raft}) ->
     zraft_util:peer_id(Raft).
 

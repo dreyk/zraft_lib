@@ -562,7 +562,8 @@ handle_sync_event(stat, _From, StateName, State) ->
         back_end = BackEnd,
         config = Config,
         current_term = T,
-        leader = Leader
+        leader = Leader,
+        state_fsm = FSM
     } = State,
     case Config of
         ?BLANK_CONF ->
@@ -582,7 +583,8 @@ handle_sync_event(stat, _From, StateName, State) ->
         state_name = StateName,
         log_state = State#state.log_state,
         snapshot_info = State#state.snapshot_info,
-        proxy_peer_stats = proxy_stats(State)
+        proxy_peer_stats = proxy_stats(State),
+        fsm_stat = zraft_fsm:stat(FSM)
     },
     {reply, Stat, StateName, State};
 handle_sync_event(stop, _From, _StateName, State) ->

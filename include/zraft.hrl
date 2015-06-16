@@ -65,7 +65,8 @@
 
 -record(read,{from,request,watch=false,global_time}).
 
--record(peer_start,{epoch,term,allow_commit,leader,back_end,log_state,snapshot_info,conf,conf_state,state_name,proxy_peer_stats=[]}).
+-record(fsm_stat,{session_number,watcher_number,tmp_count}).
+-record(peer_start,{epoch,term,allow_commit,leader,back_end,log_state,snapshot_info,conf,conf_state,state_name,proxy_peer_stats=[],fsm_stat}).
 -record(proxy_peer_stat,{peer_state,is_snapshoting}).
 -record(swrite,{data,message_id,acc_upto,from,temporary=false}).%%write in session
 -record(write,{data,from}).%%optimistic write
