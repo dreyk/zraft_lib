@@ -25,6 +25,7 @@
 %% API
 -export([
     start_link/2,
+    start_link/3,
     query/3,
     query/4,
     write/3,
@@ -84,6 +85,11 @@ write(Session, Data, Temporary, Timeout) ->
 -spec stop(session()) -> ok.
 stop(Session) ->
     gen_server:cast(Session, stop).
+
+-spec start_link(atom(),zraft_consensus:peer_id()|list(zraft_consensus:peer_id()), timeout()) ->
+    {ok, pid()} | {error, Reason :: term()}.
+start_link(Name,Peer, Timeout) ->
+    gen_server:start_link({locak,Name},?MODULE, [Peer, Timeout], []).
 
 -spec start_link(zraft_consensus:peer_id()|list(zraft_consensus:peer_id()), timeout()) ->
     {ok, pid()} | {error, Reason :: term()}.
