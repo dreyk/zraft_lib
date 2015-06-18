@@ -89,7 +89,7 @@ stop(Session) ->
 -spec start_link(atom(),zraft_consensus:peer_id()|list(zraft_consensus:peer_id()), timeout()) ->
     {ok, pid()} | {error, Reason :: term()}.
 start_link(Name,Peer, Timeout) ->
-    gen_server:start_link({locak,Name},?MODULE, [Peer, Timeout], []).
+    gen_server:start_link({local,Name},?MODULE, [Peer, Timeout], []).
 
 -spec start_link(zraft_consensus:peer_id()|list(zraft_consensus:peer_id()), timeout()) ->
     {ok, pid()} | {error, Reason :: term()}.
