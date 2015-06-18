@@ -218,7 +218,8 @@ handle_info({'DOWN', Ref, process, Caller, _}, State) ->
     {noreply, State1};
 
 handle_info({timeout, TimerRef, pending}, State = #state{pending = TimerRef}) ->
-    case change_leader(undefined,State) of
+    FreashSession = zraft_session_obj:reset(State#state.session),
+    case change_leader(undefined,State#state{session = FreashSession}) of
         {false,State1}->
             {noreply,State1};
         {true,State1}->
