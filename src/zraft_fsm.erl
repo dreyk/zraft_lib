@@ -833,9 +833,8 @@ change_raft_state(NewRaftState, State = #state{raft_state = leader, watchers = W
     ets:delete_all_objects(W),
     ets:foldl(fun(O, Acc) ->
         case O of
-            {_, MRef, _, _} ->
-                demonitor_session(MRef);
-            {From, _MRef, _, _} ->
+            {From, MRef, _, _} ->
+                demonitor_session(MRef),
                 ets:update_element(M, From, {2, undefined});
             _->
                 ok
