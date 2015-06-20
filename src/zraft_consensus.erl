@@ -155,12 +155,12 @@ query_local(PeerID, Query, Timeout) ->
     gen_fsm:sync_send_all_state_event(PeerID, Req, Timeout).
 
 %% @doc Query data form user backend.
--spec query(peer_id(), term(), timeout()) -> {ok, term()}|{leader, peer_id()}|{error, timeout}.
+-spec query(peer_id(), term(), timeout()) -> {ok, term()}|{leader, peer_id()}|{error, timeout}|{error, loading}.
 query(PeerID, Query, Timeout) ->
     sync_leader_read_request(PeerID, read_request, [false,Query], Timeout).
 
 %% @doc Query data form user backend and set watch for future change.
--spec query(peer_id(),term(),term(), timeout()) -> {ok, term()}|{leader, peer_id()}|{error, timeout}.
+-spec query(peer_id(),term(),term(), timeout()) -> {ok, term()}|{leader, peer_id()}|{error, timeout}|{error, loading}.
 query(PeerID,WatchRef,Query, Timeout) ->
     sync_leader_read_request(PeerID, read_request, [WatchRef,Query], Timeout).
 
@@ -177,7 +177,7 @@ get_conf(PeerID, Timeout) ->
     sync_leader_read_request(PeerID, get_conf_request, [], Timeout).
 
 %% @doc Write data to user backend
--spec write(peer_id(), term(), timeout()) -> {ok,term()}|{leader, peer_id()}.
+-spec write(peer_id(), term(), timeout()) -> {ok,term()}|{leader, peer_id()}|{error, loading}.
 write(PeerID, Data, Timeout) ->
     Req = #write{data = Data},
     gen_fsm:sync_send_all_state_event(PeerID, Req, Timeout).
@@ -254,7 +254,7 @@ make_snapshot_info(Peer, From, Index) ->
 truncate_log(Raft, SnapshotInfo) ->
     send_all_state_event(Raft, SnapshotInfo).
 
--spec sync_leader_read_request(peer_id(), atom(), list(), timeout()) -> {ok, term()}|retry|{error, not_leader}|{error, term()}.
+-spec sync_leader_read_request(peer_id(), atom(), list(), timeout()) -> {ok, term()}|retry|{error, not_leader}|{error, loading}|{error, term()}.
 sync_leader_read_request(PeerID, Function, Args, Timeout) ->
     Now = os:timestamp(),
     Req = #read_request{timeout = Timeout, function = Function, args = Args, start_time = Now},
@@ -482,6 +482,12 @@ drop_request(StateName, Req, State) ->
 handle_event(Info = #snapshot_info{}, load, InitialState = #init_state{log = Log}) ->
     Async = zraft_fs_log:truncate_before(Log, Info),
     {next_state, load, InitialState#init_state{snapshot_info = Info, async = Async}};
+handle_event(#read_request{args = [From|_]},load, InitialState) ->
+    reply_caller(From,{leader, undefined}),
+    {next_state,load, InitialState};
+handle_event(#swrite{from = From,message_id = Seq},load, InitialState) ->
+    reply_caller(From,#swrite_error{sequence = Seq,leader = undefined,error = not_leader}),
+    {next_state, load, InitialState};
 handle_event(_, load, InitialState) ->
     %%drop all in load state
     {next_state, load, InitialState};

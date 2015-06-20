@@ -324,6 +324,13 @@ peer_execute(PeerID, Fun, Start, Timeout) ->
                 {false, _Timeout1} ->
                     peer_execute(NewLeader, Fun, os:timestamp(), Timeout)
             end;
+        {error, loading}->
+            case zraft_util:is_expired(Start, Timeout) of
+                true ->
+                    {error, timeout};
+                {false, _Timeout1} ->
+                    peer_execute(PeerID, Fun, os:timestamp(), Timeout)
+            end;
         Else ->
             format_error(Else)
     end.
@@ -342,6 +349,8 @@ peer_execute_sessions(Session, Fun, Start, Timeout) ->
                        Session1 ->
                            {continue, Session1}
                    end;
+               {error, loading}->
+                   {continue, Session};
                _Else ->
                    case zraft_session_obj:fail(Session) of
                        {error, Err} ->

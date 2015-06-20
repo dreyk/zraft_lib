@@ -48,7 +48,8 @@ session_test_() ->
         fun stop_node/1,
         fun(_X) ->
             [
-                sessions()
+                sessions(),
+                session_first()
             ]
         end
     }.
@@ -115,6 +116,27 @@ sessions() ->
         ok = zraft_consensus:stop(Peer3)
     end}.
 
+session_first() ->
+    {timeout,30,fun() ->
+        PeerID1 = {test1, node()},
+        PeerID2 = {test2, node()},
+        PeerID3 = {test3, node()},
+        {ok, Peer1} = zraft_consensus:start_link(PeerID1, zraft_dict_backend),
+        wait_start(Peer1,1),
+        {ok,S1} = zraft_session:start_link([PeerID1,PeerID2,PeerID3],10000),
+        timer:sleep(1000),
+        {ok, Peer2} = zraft_consensus:start_link(PeerID2, zraft_dict_backend),
+        {ok, Peer3} = zraft_consensus:start_link(PeerID3, zraft_dict_backend),
+        {L,_} = wait_leader(Peer1,1),
+        ?debugFmt("Leader is ~p",[L]),
+        R1 = zraft_session:query(S1,1,10000),
+        ?assertEqual({ok,v1},R1),
+        zraft_session:stop(S1),
+        ok = zraft_consensus:stop(Peer1),
+        ok = zraft_consensus:stop(Peer2),
+        ok = zraft_consensus:stop(Peer3)
+    end}.
+
 down_attempt(Attempt,Max) when Attempt<Max->
     ok;
 down_attempt(_Attempt,_Max)->
@@ -127,6 +149,15 @@ wait_leadership(Peer,Commit, Attempt) ->
         #peer_start{} ->
             ?debugFmt("Wait leadership attempt - ~p",[Attempt]),
             wait_leadership(Peer,Commit, Attempt + 1)
+    end.
+wait_start(Peer, Attempt) ->
+    timer:sleep(500),
+    down_attempt(Attempt,20),
+    case zraft_consensus:stat(Peer) of
+        #peer_start{state_name = load} ->
+            wait_start(Peer, Attempt + 1);
+        _->
+            ok
     end.
 wait_leader(Peer, Attempt) ->
     timer:sleep(500),
