@@ -279,8 +279,7 @@ repeat_ping(State = #state{acc_upto = To})->
 
 connect(State = #state{connected = true}) ->
     State;
-connect(State = #state{timeout = Timeout, timer = Timer}) ->
-    cancel_timer(Timer),
+connect(State = #state{timeout = Timeout}) ->
     case install_leader(State) of
         {false,State1}->
             State1;
