@@ -219,7 +219,7 @@ handle_info({'DOWN', Ref, process, Caller, _}, State) ->
 
 handle_info({timeout, TimerRef, pending}, State = #state{pending = TimerRef}) ->
     FreashSession = zraft_session_obj:reset(State#state.session),
-    case change_leader(undefined,State#state{session = FreashSession}) of
+    case install_leader(State#state{session = FreashSession,pending = false}) of
         {false,State1}->
             {noreply,State1};
         {true,State1}->
