@@ -73,14 +73,20 @@ query(Session, Query, Timeout) ->
     query(Session, Query, false, Timeout).
 -spec query(session(), term(), reference()|false, timeout()) -> {ok, term()}.
 query(Session, Query, Watch, Timeout) ->
-    gen_server:call(Session, {query, {Query, Watch, Timeout}}, Timeout).
+    gen_server:call(Session, {query, {Query, Watch, Timeout}}, inc_timeout(Timeout)).
 
 -spec write(session(), term(), timeout()) -> {ok, term()}.
 write(Session, Data, Timeout) ->
     write(Session, Data, false, Timeout).
 -spec write(session(), term(), true|false, timeout()) -> {ok, term()}.
 write(Session, Data, Temporary, Timeout) ->
-    gen_server:call(Session, {write, {Data, Temporary, Timeout}}, Timeout).
+    gen_server:call(Session, {write, {Data, Temporary, Timeout}}, inc_timeout(Timeout)).
+
+-spec inc_timeout(timeout())->timeout().
+inc_timeout(T) when is_integer(T)->
+    round(T*1.5);
+inc_timeout(T)->
+    T.
 
 -spec stop(session()) -> ok.
 stop(Session) ->
