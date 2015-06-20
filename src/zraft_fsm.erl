@@ -752,7 +752,7 @@ restore_sessions(State = #state{last_dir = SnapshotDir}) ->
                 State#state.raft_state == leader ->
                     upgrade_monitors(T1);
                 true ->
-                    ok
+                    clear_monitor(T1)
             end,
             State#state{monitors = T1, sessions = T2};
         _ ->
@@ -767,6 +767,12 @@ upgrade_monitors(Tab) ->
     ets:foldl(fun({From, _OldRef, _E, _T}, Acc) ->
         MRef = erlang:monitor(process, From),
         ets:update_element(Tab, From, {2, MRef}),
+        Acc
+    end, 0, Tab).
+
+clear_monitor(Tab)->
+    ets:foldl(fun({From, _OldRef, _E, _T}, Acc) ->
+        ets:update_element(Tab, From, {2,undefined}),
         Acc
     end, 0, Tab).
 
@@ -829,7 +835,9 @@ change_raft_state(NewRaftState, State = #state{raft_state = leader, watchers = W
         case O of
             {_, MRef, _, _} ->
                 demonitor_session(MRef);
-            _ ->
+            {From, _MRef, _, _} ->
+                ets:update_element(M, From, {2, undefined});
+            _->
                 ok
         end, Acc end, 0, M),
     {noreply, State#state{raft_state = NewRaftState}};
