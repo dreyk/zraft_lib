@@ -385,6 +385,7 @@ apply_data(GlobalTime, Req = #swrite{}, BackEnd, UState, State) ->
                             Result = PrevResult,
                             UState1 = UState
                     end,
+                    acc_session(AccUpTo, From, State),
                     reply_caller(State#state.raft_state, From, #swrite_reply{data = Result, sequence = MsgID}),
                     UState1;
                 false ->
@@ -719,12 +720,14 @@ finish_snapshot(State) ->
     end.
 
 install_snapshot(State = #state{last = 0, back_end = BackEnd, raft = Raft}) ->
+    drop_old_table(State),
     Sessions = ets:new(session_table_name(State), [bag, {write_concurrency, false}, {read_concurrency, false}]),
     Monitors = ets:new(monitor_table_name(State), [ordered_set, {write_concurrency, false}, {read_concurrency, false}]),
     {ok, UState} = BackEnd:init(zraft_util:peer_id(Raft)),
     truncate_log(Raft, #snapshot_info{}),
     State#state{ustate = UState, sessions = Sessions, monitors = Monitors};
 install_snapshot(State = #state{raft = Raft, ustate = Ustate, back_end = BackEnd, dir = Dir, last = Last}) ->
+    drop_old_table(State),
     SnapshotDir = filename:join(Dir, "snapshot-" ++ integer_to_list(Last)),
     DataDir = filename:join(SnapshotDir, "data"),
     {ok, Ustate1} = BackEnd:install_snapshot(DataDir, Ustate),
@@ -740,6 +743,15 @@ install_snapshot(State = #state{raft = Raft, ustate = Ustate, back_end = BackEnd
     State2 = restore_sessions(State1),
     truncate_log(Raft, SnaphotInfo),
     State2.
+
+drop_old_table(#state{sessions = S,monitors = M})->
+    drop_table(S),
+    drop_table(M).
+
+drop_table(undefined)->
+    ok;
+drop_table(Tab)->
+    ets:delete(Tab).
 
 restore_sessions(State = #state{last_dir = SnapshotDir}) ->
     MonitorFile = filename:join(SnapshotDir, "monitors"),
