@@ -152,7 +152,6 @@ handle_cast(?LOST_LEADERSHIP_CMD,
     State3 = State2#state{peer = Peer#peer{has_vote = false, epoch = 0}, current_term = 0},
     {noreply, State3};
 handle_cast(hearbeat_timeout, State = #state{request_ref = Ref}) when Ref /= undefined ->
-    ?WARNING(State,"There is active request"),
     {noreply, State};
 handle_cast(hearbeat_timeout, State) ->%%send new hearbeat
     case State#state.snapshot_progres of
