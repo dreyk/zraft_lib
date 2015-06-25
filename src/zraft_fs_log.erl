@@ -165,7 +165,8 @@ init([PeerID]) ->
     {ok, loading}.
 
 load_fs(PeerID) ->
-    PeerDir = filename:join([?DATA_DIR, zraft_util:peer_name(PeerID)]),
+    PeerDirName = zraft_util:peer_name_to_dir_name(zraft_util:peer_name(PeerID)),
+    PeerDir = filename:join([?DATA_DIR, PeerDirName]),
     LogDir = filename:join(PeerDir, "log"),
     ok = zraft_util:make_dir(PeerDir),
     ok = zraft_util:make_dir(LogDir),
