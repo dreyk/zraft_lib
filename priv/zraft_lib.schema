@@ -200,7 +200,7 @@
 ]}.
 
 %% @doc Request timeout. Default is double election timeout.
-{mapping, "zraft.election-timeout", "zraft_lib.election-timeout", [
+{mapping, "zraft.request-timeout", "zraft_lib.request_timeout", [
   {datatype, {duration, ms}}
 ]}.
 
