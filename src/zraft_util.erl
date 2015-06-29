@@ -42,7 +42,9 @@
     now_millisec/0,
     timestamp_millisec/1,
     count_list/1,
-    cycle_exp/1
+    cycle_exp/1,
+    peer_name_to_dir_name/1,
+    format/2
 ]).
 
 now_millisec()->
@@ -134,6 +136,15 @@ make_safe(Dir)->
         Else->
             Else
     end.
+
+%% Based on: https://github.com/rabbitmq/rabbitmq-server/blob/master/src/rabbit_queue_index.erl#L542
+peer_name_to_dir_name(PeerId) ->
+    <<Num:128>> = erlang:md5(term_to_binary(PeerId)),
+    list_to_atom(format("~.36B", [Num])).
+
+%% Taken from: https://github.com/rabbitmq/rabbitmq-server/blob/master/src/rabbit_misc.erl#L649
+format(Fmt, Args) ->
+    lists:flatten(io_lib:format(Fmt, Args)).
 
 node_addr(Node)->
     L = atom_to_list(Node),
