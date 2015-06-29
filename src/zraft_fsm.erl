@@ -114,7 +114,8 @@ init([Raft, BackEnd]) ->
 
 delayed_init(State = #state{raft = Raft}) ->
     PeerID = zraft_util:peer_id(Raft),
-    Dir = filename:join([?DATA_DIR, zraft_util:peer_name(PeerID), "snapshots"]),
+    PeerDirName = zraft_util:peer_name_to_dir_name(zraft_util:peer_name(PeerID)),
+    Dir = filename:join([?DATA_DIR,PeerDirName, "snapshots"]),
     ok = zraft_util:make_dir(Dir),
     Seq = clean_dir(Dir),
     WatchersTable = ets:new(watcher_table_name(State), [bag, {write_concurrency, false}, {read_concurrency, false}]),

@@ -1424,6 +1424,7 @@ check_snaphost_result(
     ).
 
 test_log_file_name(Name) ->
-    filename:join([?DATA_DIR, zraft_util:peer_name({test, node()}), "log", Name]).
+    PeerDirName = zraft_util:peer_name_to_dir_name(zraft_util:peer_name({test, node()})),
+    filename:join([?DATA_DIR,PeerDirName,"log", Name]).
 
 -endif.
