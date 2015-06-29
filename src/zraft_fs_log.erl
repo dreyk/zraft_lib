@@ -855,8 +855,8 @@ term_at(Index, State) ->
 
 is_safe_trunctate(CommitIndex, Index) when CommitIndex < Index ->
     true;
-is_safe_trunctate(_, _) ->
-    lager:error("Should never truncate committed entries"),
+is_safe_trunctate(CommitIndex, Index) ->
+    lager:error("Should never truncate committed entries ~p >= p",[CommitIndex,Index]),
     exit({error, commit_collision}).
 
 last_conf(#snapshot_info{conf = SConf, conf_index = SI}, Configs) ->
