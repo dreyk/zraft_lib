@@ -678,18 +678,20 @@ handle_info(_Info, StateName, State) ->
 
 terminate(_Reason, _, ok) ->
     ok;
-terminate(_Reason, load, #init_state{log = Log, fsm = FSM}) ->
-    ok = zraft_fsm:stop(FSM),
-    ok = zraft_fs_log:stop(Log),
+terminate(Reason, load, #init_state{log = Log, fsm = FSM}) ->
+    lager:error("Terminating consensus in load ~p",[Reason]),
+    (catch zraft_fsm:stop(FSM)),
+    (catch zraft_fs_log:stop(Log)),
     ok;
-terminate(_Reason, _StateName, State) ->
+terminate(Reason,StateName, State) ->
+    lager:error("Terminating consensus in ~s ~p",[StateName,Reason]),
     %%stop all subprocess
     reset_subprocess(State).
 
 reset_subprocess(State = #state{log = Log, state_fsm = FSM}) ->
     stop_all_peer(State),
-    ok = zraft_fsm:stop(FSM),
-    ok = zraft_fs_log:stop(Log),
+    (catch raft_fsm:stop(FSM)),
+    (catch zraft_fs_log:stop(Log)),
     ok.
 
 code_change(_OldVsn, StateName, State, _Extra) ->
@@ -1391,7 +1393,7 @@ accept_conf_request(State = #state{sessions = Sessions, log_state = LogState, co
 
 stop_all_peer(#state{peers = Peers}) ->
     lists:foreach(fun({_, P}) ->
-        ok = zraft_peer_proxy:stop_sync(P) end, Peers).
+        (catch zraft_peer_proxy:stop_sync(P)) end, Peers).
 
 -spec peer(peer_id()) -> from_peer_addr().
 peer(ID) ->
