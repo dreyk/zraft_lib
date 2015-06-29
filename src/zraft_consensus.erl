@@ -690,7 +690,7 @@ terminate(Reason,StateName, State) ->
 
 reset_subprocess(State = #state{log = Log, state_fsm = FSM}) ->
     stop_all_peer(State),
-    (catch raft_fsm:stop(FSM)),
+    (catch zraft_fsm:stop(FSM)),
     (catch zraft_fs_log:stop(Log)),
     ok.
 
@@ -808,6 +808,7 @@ handle_vote_reuqest(StateName, Req, State) ->
                 true ->
                     %%if we candidate then NewTerm>CurrentTerm(else see clause before)
                     %%if we follower  then NewTerm>CurrentTerm or we have't voted for this term yeat.
+                    ?WARNING(State,"vote for ~p oldterm ~p new term ~p",[MustVotFor,CurrentTerm,NewTerm]),
                     State1 = step_down(undefined, MustVotFor, StateName, NewTerm, State),
                     if
                         IsLogUpToDate ->
@@ -926,6 +927,7 @@ handle_append_entries(StateName, Req = #append_entries{term = T1, from = From},
         NewLeader == Leader ->
             append_entries(Req, State);
         true ->
+            ?WARNING(State,"Same term append from ~p old ~p",[NewLeader,Leader]),
             State1 = State#state{leader = NewLeader},%%only leader change
             append_entries(Req, State1)
     end;
