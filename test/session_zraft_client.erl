@@ -22,7 +22,7 @@
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
--include_lib("zraft_lib/include/zraft.hrl").
+-include("zraft.hrl").
 
 
 -define(TIMEOUT, 10000).

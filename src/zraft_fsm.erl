@@ -41,7 +41,7 @@
     stat/1
 ]).
 
--include_lib("zraft_lib/include/zraft.hrl").
+-include("zraft.hrl").
 
 -define(SNAPSHOT_HEADER_VERIOSN, 1).
 -define(DATA_DIR, zraft_util:get_env(snapshot_dir, "data")).

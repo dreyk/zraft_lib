@@ -40,7 +40,7 @@
     set_state/2
 ]).
 
--include_lib("zraft_lib/include/zraft.hrl").
+-include("zraft.hrl").
 
 -record(state, {raft,conf_id,old,new,conf_state,epoch_qourum,index_quorum,vote_quorum,raft_state}).
 

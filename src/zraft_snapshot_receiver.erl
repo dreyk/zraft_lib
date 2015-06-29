@@ -48,7 +48,7 @@
 -define(DATA_TIMEOUT, 10000).
 -define(NEXT_HEARBEAT, <<1:8>>).
 
--include_lib("zraft_lib/include/zraft.hrl").
+-include("zraft.hrl").
 
 -ifdef(TEST).
 -define(SNAPHOT_LISTENER_ADDR, "127.0.0.1").

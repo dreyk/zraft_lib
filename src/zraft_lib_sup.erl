@@ -26,7 +26,7 @@
 
 -export([init/1,start_consensus/2,start_consensus/1]).
 
--include_lib("zraft_lib/include/zraft.hrl").
+-include("zraft.hrl").
 
 -spec(start_link() ->
     {ok, Pid :: pid()} | ignore | {error, Reason :: term()}).

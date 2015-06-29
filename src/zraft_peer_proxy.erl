@@ -20,7 +20,7 @@
 -module(zraft_peer_proxy).
 -author("dreyk").
 
--include_lib("zraft_lib/include/zraft.hrl").
+-include("zraft.hrl").
 
 -define(INFO(State,S, As),?MINFO("~p: "++S,[print_id(State)|As])).
 -define(INFO(State,S), ?MINFO("~p: "++S,[print_id(State)])).

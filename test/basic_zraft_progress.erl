@@ -22,7 +22,7 @@
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
--include_lib("zraft_lib/include/zraft.hrl").
+-include("zraft.hrl").
 
 append_test(P, E) ->
     gen_fsm:sync_send_event(P, {append_test, E}).

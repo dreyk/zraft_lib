@@ -44,7 +44,7 @@
     terminate/2,
     code_change/3]).
 
--include_lib("zraft_lib/include/zraft.hrl").
+-include("zraft.hrl").
 
 
 -define(CONNECTING, connecting).
