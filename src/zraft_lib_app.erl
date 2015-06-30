@@ -29,12 +29,7 @@
 ]).
 
 start(_StartType, _StartArgs) ->
-    case zraft_lib_sup:start_link() of
-        {ok, Pid} ->
-            {ok, Pid};
-        Error ->
-            Error
-    end.
+    zraft_lib_sup:start_link().
 
 stop(_State) ->
     ok.
