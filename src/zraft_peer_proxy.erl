@@ -554,14 +554,8 @@ add_append(Req1,undefined)->
     Req1;
 add_append(undefined,Req=#append_entries{entries = E})->
     Req#append_entries{entries = [E]};
-add_append(Req1 = #append_entries{entries = Entries1,prev_log_index = I1},
-    #append_entries{entries = Entries2,epoch = NewEpoch,commit_index = NewCommit,prev_log_index = I2})->
-    case (I2-I1) of
-        1->
-            ok;
-        _Else->
-            exit({gap,{I1,I2}})
-    end,
+add_append(Req1 = #append_entries{entries = Entries1},
+    #append_entries{entries = Entries2,epoch = NewEpoch,commit_index = NewCommit})->
     Req1#append_entries{epoch = NewEpoch,commit_index = NewCommit,entries = [Entries2|Entries1]}.
 
 append_flatten(Req = #append_entries{entries = Entries})->
@@ -710,14 +704,7 @@ commands() ->
             },
             S1
         ),
-        cmd(Proxy, {?OPTIMISTIC_REPLICATE_CMD,
-            #append_entries{
-                commit_index = 0,
-                entries = [1],
-                epoch = 4,
-                prev_log_index = 7,
-                prev_log_term = 7,
-                term = 6}}),
+        gen_server:call(Proxy, force_hearbeat_timeout),
         R19 = wait_request(),
         ?assertMatch(
             {replicate_log, #append_entries{entries = true, prev_log_index = 6}},
