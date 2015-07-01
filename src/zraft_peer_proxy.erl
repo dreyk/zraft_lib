@@ -45,7 +45,8 @@
     stop/1,
     cmd/2,
     stat/2,
-    stop_sync/1]).
+    stop_sync/1,
+    lists_flatten/1]).
 
 -define(REQUEST_TIMEOUT,zraft_util:get_env(request_timeout,zraft_consensus:get_election_timeout()*2)).
 
@@ -61,6 +62,7 @@
     request_time,
     force_hearbeat = false,
     force_request = false,
+    append_buffer,
     current_term = 0,
     current_epoch = 0,
     back_end, request_timeout, snapshot_progres}).
@@ -149,7 +151,7 @@ handle_cast(?LOST_LEADERSHIP_CMD,
     State = #state{peer = Peer}) ->
     State1 = reset_timers(true, State),
     State2 = reset_snapshot(State1),
-    State3 = State2#state{peer = Peer#peer{has_vote = false, epoch = 0}, current_term = 0},
+    State3 = State2#state{append_buffer = undefined,peer = Peer#peer{has_vote = false, epoch = 0}, current_term = 0},
     {noreply, State3};
 handle_cast(hearbeat_timeout, State = #state{request_ref = Ref}) when Ref /= undefined ->
     {noreply, State};
@@ -169,7 +171,7 @@ handle_cast(request_timeout, State = #state{request_ref = undefined}) ->
 handle_cast(request_timeout, State) ->%%send new request
     State1 = reset_timers(false, State),
     State2 = reset_snapshot(State1),%%May be snapshot is being copied
-    State3 = start_replication(State2),%%Start new attempt
+    State3 = start_replication(State2#state{append_buffer = undefined}),%%Start new attempt
     {noreply, State3};
 
 handle_cast({?BECOME_LEADER_CMD, HearBeat},
@@ -181,7 +183,8 @@ handle_cast({?BECOME_LEADER_CMD, HearBeat},
         force_hearbeat = true,%% We must match followers log before start replication
         current_term = CurrentTerm,
         current_epoch = Epoch,
-        peer = Peer#peer{last_agree_index = 0, next_index = LastLogIndex + 1}
+        peer = Peer#peer{last_agree_index = 0, next_index = LastLogIndex + 1},
+        append_buffer = undefined
     },
     State4 = replicate(HearBeat, State3),
     {noreply, State4};
@@ -190,22 +193,20 @@ handle_cast({?OPTIMISTIC_REPLICATE_CMD, Req},
     State = #state{request_ref = Ref}) when Ref /= undefined ->
     %%prev request has't finished yet
     #append_entries{term = Term, epoch = Epoch} = Req,
-    {noreply, State#state{force_request = true, current_term = Term, current_epoch = Epoch}};
+    State1 = case State#state.snapshot_progres of
+                 undefined->
+                     Req1 = add_append(State#state.append_buffer,Req),
+                     State#state{append_buffer = Req1};
+                 _->
+                     State
+             end,
+    {noreply, State1#state{force_request = true, current_term = Term, current_epoch = Epoch}};
 
 handle_cast({?OPTIMISTIC_REPLICATE_CMD, Req},
-    State = #state{peer = Peer, snapshot_progres = undefined}) ->
-    #peer{next_index = NextIndex} = Peer,
-    PrevIndex = NextIndex - 1,
-    #append_entries{prev_log_index = ReqPrevIndex, term = Term, epoch = Epoch} = Req,
+    State = #state{snapshot_progres = undefined}) ->
+    #append_entries{term = Term, epoch = Epoch} = Req,
     State1 = State#state{current_term = Term, current_epoch = Epoch},
-    State2 = if
-                 PrevIndex == ReqPrevIndex ->
-                     %%peer in sync.Just add all entries
-                     replicate(Req, State1);
-                 true ->
-                     %%need more log to replcate
-                     start_replication(State1)
-             end,
+    State2 = replicate(Req, State1),
     {noreply, State2};
 
 handle_cast({?OPTIMISTIC_REPLICATE_CMD, Req}, State) ->%%snapshot are being copied
@@ -234,7 +235,7 @@ handle_cast(#append_reply{term = PeerTerm},
     ?WARNING(State,"Peer has new term(leader)"),
     zraft_consensus:maybe_step_down(Raft, PeerTerm),
     State1 = reset_timers(true, State),
-    {noreply, State1};
+    {noreply, State1#state{append_buffer = undefined}};
 
 handle_cast(#append_reply{from_peer = From,request_ref = RF, last_index = LastIndex, epoch = Epoch},
     State = #state{peer = Peer, request_ref = RF}) ->
@@ -242,7 +243,7 @@ handle_cast(#append_reply{from_peer = From,request_ref = RF, last_index = LastIn
     DecNext = Peer#peer.next_index - 1,
     NextIndex = max(1, min(LastIndex, DecNext)),
     State1 = update_peer(NextIndex, Epoch,From, State),
-    progress(State1);
+    progress(State1#state{append_buffer = undefined});
 
 handle_cast(#append_reply{}, State) ->%%Out of date responce
     {noreply, State};
@@ -253,7 +254,7 @@ handle_cast(Req = #install_snapshot{request_ref = RF, term = Term, epoch = Epoch
     State1 = reset_timers(false, State),
     ?INFO(State,"Need Install snaphsot"),
     %%try start snapshot copy process
-    State2 = install_snapshot(Req, State1#state{current_epoch = Epoch, current_term = Term}),
+    State2 = install_snapshot(Req, State1#state{current_epoch = Epoch, current_term = Term,append_buffer = undefined}),
     {noreply, State2};
 
 handle_cast(#install_snapshot{}, State) ->%%Out of date responce
@@ -330,11 +331,11 @@ handle_info({'DOWN', Ref, process, _, normal},
     ?INFO(State,"Snapshot has transfered."),
     State1 = reset_timers(false, State),
     State2 = install_snapshot_hearbeat(finish, State1),
-    {noreply, State2#state{snapshot_progres = undefined, force_request = true}};
+    {noreply, State2#state{snapshot_progres = undefined, force_request = true,append_buffer = undefined}};
 handle_info({'DOWN', Ref, process, _, Reason},
     State = #state{snapshot_progres = #snapshot_progress{mref = Ref}}) ->
     ?ERROR(State,"Snapshot transfer failed ~p",[Reason]),
-    progress(State#state{force_request = true, snapshot_progres = undefined});
+    progress(State#state{force_request = true, snapshot_progres = undefined,append_buffer = undefined});
 handle_info(_, State) ->
     {noreply, State}.
 
@@ -355,6 +356,8 @@ terminate(Reason, State=#state{snapshot_progres = Progress}) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
+start_replication(State = #state{force_request = true,append_buffer = Buffer}) when Buffer /= undefined->
+    replicate(undefined,State);
 start_replication(State) ->
     #state{peer = Peer, raft = Raft, force_hearbeat = FH, request_timeout = Timeout} = State,
     #peer{next_index = NextIndex, id = PeerID} = Peer,
@@ -370,17 +373,19 @@ start_replication(State) ->
     Timer = zraft_util:gen_server_cast_after(Timeout, request_timeout),
     State#state{request_ref = RequestRef, request_timer = Timer,request_time = os:timestamp()}.
 replicate(Req, State) ->
-    #state{peer = Peer,request_timeout = Timeout} = State,
+    #state{peer = Peer,request_timeout = Timeout,append_buffer = Buffer} = State,
+    Req1 = add_append(Buffer,Req),
+    Req2 = append_flatten(Req1),
     #peer{id = PeerID} = Peer,
     RequestRef = erlang:make_ref(),
-    #append_entries{commit_index = Commit,prev_log_index = Prev,entries = Entries}=Req,
+    #append_entries{commit_index = Commit,prev_log_index = Prev,entries = Entries}=Req2,
     NewCommitIndex = min(Commit,Prev+length(Entries)),
     zraft_peer_route:cmd(
         PeerID,
-        Req#append_entries{commit_index = NewCommitIndex,request_ref = RequestRef, from = from_addr(State)}
+        Req2#append_entries{commit_index = NewCommitIndex,request_ref = RequestRef, from = from_addr(State)}
     ),
     Timer = zraft_util:gen_server_cast_after(Timeout, request_timeout),
-    State#state{request_ref = RequestRef, request_timer = Timer,request_time = os:timestamp()}.
+    State#state{request_ref = RequestRef, request_timer = Timer,request_time = os:timestamp(),append_buffer = undefined}.
 
 install_snapshot(Req, State) ->
     #state{peer = Peer,request_timeout = Timeout} = State,
@@ -429,7 +434,7 @@ reset_snapshot(State = #state{snapshot_progres = #snapshot_progress{mref = Ref, 
         true ->
             ok
     end,
-    State#state{snapshot_progres = undefined}.
+    State#state{snapshot_progres = undefined,append_buffer = undefined}.
 
 reset_timers(Result, State = #state{request_timer = RT, hearbeat_timer = HT}) ->
     cancel_timer(RT),
@@ -544,6 +549,29 @@ print_id(#state{raft = Raft,peer = #peer{id = ProxyID}})->
 from_addr(#state{raft = Raft})->
     ID = zraft_util:peer_id(Raft),
     {ID,self()}.
+
+add_append(Req1,undefined)->
+    Req1;
+add_append(undefined,Req=#append_entries{entries = E})->
+    Req#append_entries{entries = [E]};
+add_append(Req1 = #append_entries{entries = Entries1,prev_log_index = I1},
+    #append_entries{entries = Entries2,epoch = NewEpoch,commit_index = NewCommit,prev_log_index = I2})->
+    case (I2-I1) of
+        1->
+            ok;
+        _Else->
+            exit({gap,{I1,I2}})
+    end,
+    Req1#append_entries{epoch = NewEpoch,commit_index = NewCommit,entries = [Entries2|Entries1]}.
+
+append_flatten(Req = #append_entries{entries = Entries})->
+    Flatten = lists_flatten(Entries),
+    Req#append_entries{entries = Flatten}.
+
+lists_flatten(L)->
+    lists:foldl(fun(L1,Acc1)->
+        lists:foldr(fun(E,Acc2)->
+            [E|Acc2] end,Acc1,L1) end,[],L).
 
 -ifdef(TEST).
 setup_peer() ->
