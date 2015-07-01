@@ -356,7 +356,7 @@ terminate(Reason, State=#state{snapshot_progres = Progress}) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-start_replication(State = #state{force_request = true,append_buffer = Buffer}) when Buffer /= undefined->
+start_replication(State = #state{append_buffer = Buffer}) when Buffer /= undefined->
     replicate(undefined,State);
 start_replication(State) ->
     #state{peer = Peer, raft = Raft, force_hearbeat = FH, request_timeout = Timeout} = State,
