@@ -316,11 +316,19 @@ split_at_index(Commited, Min, Max,
     true = is_safe_trunctate(Commited, First),
     split_at_index(Commited, Min, Max, T, P1);
 split_at_index(Commited, Min, Max,
-    [#segment{firt_index = First, entries = Entries} | T], P1) when First >= Min ->
-    P2 = split_entry_at_index(Commited, Min, Max, Entries, P1),
-    split_at_index(Commited, Min, Max, T, P2);
+    [#segment{last_index = Last,firt_index = First, entries = Entries} | T], P1)->
+    case is_intersec(First,Last,Min,Max) of
+        true->
+            P2 = split_entry_at_index(Commited, Min, Max, Entries, P1),
+            split_at_index(Commited, Min, Max, T, P2);
+        _->
+            P1
+    end;
 split_at_index(_Commited, _Min, _Max, _Segments, P1) ->
     P1.
+
+is_intersec(L1,H1,L2,H2)->
+    (L2 >= L1 andalso L2 =< H1) orelse (H2 >= L1 andalso H2 =< H1) orelse (L2<L1 andalso H2>H1).
 
 split_entry_at_index(Commited, Min, Max, [#entry{index = I2} | T], P1) when I2 > Max ->
     true = is_safe_trunctate(Commited, I2),

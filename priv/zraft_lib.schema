@@ -236,7 +236,7 @@
 
 %% @doc Address that will be used for snapshot receive.
 {mapping, "zraft.snapshot-listen-if", "zraft_lib.snapshot_listener_addr", [
-  {default,"0,0,0,0"}
+  {default,"0.0.0.0"}
 ]}.
 
 %% @doc Port that will be used for snapshot receive. Default 0 - any free port.
