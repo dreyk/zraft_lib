@@ -690,7 +690,7 @@ terminate(Reason,StateName, State) ->
 
 reset_subprocess(State = #state{log = Log, state_fsm = FSM}) ->
     stop_all_peer(State),
-    (catch raft_fsm:stop(FSM)),
+    (catch zraft_fsm:stop(FSM)),
     (catch zraft_fs_log:stop(Log)),
     ok.
 
@@ -769,11 +769,14 @@ maybe_change_config(State = #state{config = Config, log_state = LogState}) ->
             {next_state, leader, State}
     end.
 
-replicate_peer_request(Type, State, Entries) ->
-    #state{current_term = Term, log_state = LogDescr, epoch = Epoch} = State,
-    #log_descr{last_index = LastIndex, last_term = LastTerm, commit_index = Commit} = LogDescr,
-    HearBeat = zraft_log_util:append_request(Epoch, Term, Commit, LastIndex, LastTerm, Entries),
-    to_all_follower_peer({Type, HearBeat}, State),
+replicate_peer_request(Type,State, Entries) ->
+    replicate_peer_request(Type,State#state.log_state,State, Entries).
+replicate_peer_request(Type,PrevLogDescr,State, Entries) ->
+    #state{current_term = Term, epoch = Epoch,log_state = LogDescr} = State,
+    #log_descr{last_index = LastIndex, last_term = LastTerm} = PrevLogDescr,
+    #log_descr{commit_index = Commit} = LogDescr,
+    Request = zraft_log_util:append_request(Epoch, Term, Commit, LastIndex, LastTerm, Entries),
+    to_all_follower_peer({Type, Request}, State),
     State.
 
 %%StateName==candidate or follower(leader are rejecting all vote request)
@@ -1206,13 +1209,13 @@ collect_results(Count, Ref, Acc) ->
             collect_results(Count - 1, Ref, [V | Acc])
     end.
 
-append(Entries, State = #state{log = Log}) ->
+append(Entries, State = #state{log = Log,log_state = LogStatePrev}) ->
     Async = zraft_fs_log:append_leader(Log, Entries),
     #log_op_result{log_state = LogState1, last_conf = NewConf, result = ok} = zraft_fs_log:sync_fs(Async),
     State1 = State#state{log_state = LogState1},
     State2 = set_config(leader, NewConf, State1),
     ok = update_peer_last_index(State2),
-    replicate_peer_request(?OPTIMISTIC_REPLICATE_CMD, State2, Entries),
+    replicate_peer_request(?OPTIMISTIC_REPLICATE_CMD,LogStatePrev,State2, Entries),
     State2.
 
 
