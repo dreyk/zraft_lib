@@ -168,11 +168,9 @@ progress() ->
         fake_reply(Command2_4, Reply4, Peer2),
         Command1_5 = check_progress(Peer1),
         %%check new conf
-
-
-        ?assertMatch([#entry{index = 4, type = ?OP_CONFIG, term = 2}],Command1_5#append_entries.entries),
         ?assertMatch(
-            #append_entries{commit_index = 3, term = 2, prev_log_index = 3, prev_log_term = 2},
+            #append_entries{commit_index = 3, term = 2, prev_log_index = 3, prev_log_term = 2,
+            entries = [#entry{index = 4, type = ?OP_CONFIG, term = 2}]},
             Command1_5
         ),
         Command2_5 = check_progress(Peer2),
