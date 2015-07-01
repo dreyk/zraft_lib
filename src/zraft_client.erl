@@ -30,6 +30,7 @@
     light_session/3,
     create/2,
     create/3,
+    set_new_conf/4,
     check_exists/1
 ]).
 
