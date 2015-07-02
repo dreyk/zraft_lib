@@ -102,7 +102,9 @@
     configs,
     last_conf,
     max_segment_size,
-    snapshot_info}).
+    snapshot_info,
+    unsynced=false
+}).
 
 -type logger() :: pid().
 
@@ -187,29 +189,36 @@ load_fs(PeerID) ->
 handle_call({raft_meta, Meta}, _From, State) ->
     State1 = update_metadata(State#fs{raft_meta = Meta}),
     State2 = update_metadata(State1),
-    {reply, ok, State2};
+    {reply, ok, State2,0};
 handle_call({get, log_descr}, _From, State) ->
     Res = log_descr(State),
-    {reply, Res, State};
+    {reply, Res, State,0};
 handle_call({get_term, Index}, _From, State) ->
     Val = term_at(Index, State),
-    {reply, Val, State};
+    {reply, Val, State,0};
 handle_call({get_entries, From, To}, _From, State) ->
     Entries = entries(From, To, State),
-    {reply, Entries, State};
+    {reply, Entries, State,0};
 handle_call({get, Index}, _From, State) ->
     Val = erlang:element(Index, State),
-    {reply, Val, State};
+    {reply, Val, State,0};
 handle_call({update_commit_index, Commit}, _From, State) ->
+    if
+        State#fs.unsynced->
+            #fs{open_segment = #segment{fd = ToSync}} = State,
+            ok = file:datasync(ToSync);
+        true->
+            ok
+    end,
     ToCommit = entries(State#fs.commit + 1, Commit, State),
-    State1 = State#fs{commit = Commit},
+    State1 = State#fs{commit = Commit,unsynced = false},
     {ok, Val, State2} = make_result(ToCommit, State1),
     {reply, Val, State2};
 handle_call(stop, _From, State) ->
     {stop, normal, ok, State};
 
 handle_call(_Request, _From, State) ->
-    {reply, ok, State}.
+    {reply, ok, State,0}.
 
 handle_cast({init, PeerID}, loading) ->
     State = load_fs(PeerID),
@@ -217,16 +226,22 @@ handle_cast({init, PeerID}, loading) ->
 
 handle_cast({replicate_log, ToPeer, Req}, State) ->
     handle_replicate_log(ToPeer, Req, State),
-    {noreply, State};
+    {noreply, State,0};
 handle_cast({command, From, Cmd}, State) ->
     {ok, Reply, State1} = handle_command(Cmd, State),
     send_reply(From, Reply),
-    {noreply, State1};
+    {noreply, State1,0};
 handle_cast(_Request, State) ->
-    {noreply, State}.
+    {noreply, State,0}.
 
+handle_info(timeout,State=#fs{unsynced = true,open_segment = #segment{fd = ToSync}})->
+    ok = file:datasync(ToSync),
+    {noreply,State#fs{unsynced = false}};
+handle_info(timeout,State)->
+    %%already has been synced
+    {noreply,State};
 handle_info(_Info, State) ->
-    {noreply, State}.
+    {noreply, State,0}.
 
 terminate(_Reason, #fs{open_segment = Open} = FS) ->
     close_segment(Open, FS),
@@ -251,7 +266,7 @@ handle_command({append, PrevIndex, PrevTerm, ToCommitIndex, Entries}, State) ->
     make_result(Result, State1);
 handle_command({append_leader, Entries}, State) ->
     State1 = append(Entries, State),
-    make_result(ok, State1).
+    make_result(ok, State1#fs{unsynced = true}).
 
 make_result(Result, State = #fs{last_conf = Conf}) ->
     {ok, #log_op_result{last_conf = Conf, log_state = log_descr(State), result = Result}, State}.
@@ -291,7 +306,8 @@ append_entry(PrevIndex, PrevTerm, ToCommitIndex, Entries0, State) ->
                     ok
             end,
             State1 = truncate_segment_after(TruncIndex, State),
-            State2 = append(NewEntries, State1),
+            State2 = #fs{open_segment = #segment{fd = ToSync}}= append(NewEntries, State1),
+            ok = file:datasync(ToSync),
             ToCommit = entries(Commited + 1, NewCommit, State2),
             {ok, {true, NewLastIndex, ToCommit},
                 State2#fs{commit = NewCommit}};
@@ -541,8 +557,7 @@ test_append(_FS,N,Max) when N>Max->
 test_append(FS,N,Max)->
     test_append(append([#entry{index = N,data = {add,{1,1}},global_time = 1,term = 1,type = ?OP_DATA}],FS),N+1,Max).
 
-append_entries(_Index, [], Open = #segment{fd = FD}, FS, Acc, LogAcc, ConfAcc) ->
-    ok = file:datasync(FD),
+append_entries(_Index, [], Open, FS, Acc, LogAcc, ConfAcc) ->
     LastConf = last_conf(FS#fs.snapshot_info, ConfAcc),
     [#entry{index = LastIndex, term = LastTerm} | _] = LogAcc,
     FS#fs{
