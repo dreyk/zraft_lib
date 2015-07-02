@@ -49,7 +49,8 @@
     replicate_log/3,
     update_commit_index/2,
     make_snapshot_info/3,
-    load_raft_meta/1
+    load_raft_meta/1,
+    test_append/1
 ]).
 
 -export_type([
@@ -529,6 +530,16 @@ append([], FS) ->
 append(Entries,
     FS = #fs{last_index = Index, open_segment = Open, closed_segments = Closed, configs = Conf}) ->
     append_entries(Index + 1, Entries, Open, FS, Closed, Open#segment.entries, Conf).
+
+test_append(Max)->
+    FS = load_fs({test,node()}),
+    Start = os:timestamp(),
+    test_append(FS,1,Max),
+    {ok,round(Max*1000000/timer:now_diff(os:timestamp(),Start))}.
+test_append(_FS,N,Max) when N>Max->
+    ok;
+test_append(FS,N,Max)->
+    test_append(append([#entry{index = N,data = {add,{1,1}},global_time = 1,term = 1,type = ?OP_DATA}],FS),N+1,Max).
 
 append_entries(_Index, [], Open = #segment{fd = FD}, FS, Acc, LogAcc, ConfAcc) ->
     ok = file:datasync(FD),
