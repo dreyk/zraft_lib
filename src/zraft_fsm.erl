@@ -476,12 +476,12 @@ clean_dir(Dir) ->
     Last = lists:foldl(fun(F, Acc) ->
         FName = filename:join(Dir, F),
         case F of
-            "snapshot.tmp-" ++ N ->
+            "snapshot.tmp-"++_ ->
                 zraft_util:del_dir(FName),
-                last_snapshot(get_index(N), Acc);
-            "archive.tmp-" ++ N ->
+                Acc;
+            "archive.tmp-" ++ _ ->
                 file:delete(FName),
-                last_snapshot(get_index(N), Acc);
+                Acc;
             "snapshot-" ++ N ->
                 last_snapshot(get_index(N), Acc);
             "archive-" ++ N ->
