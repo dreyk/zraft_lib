@@ -49,7 +49,9 @@
     replicate_log/3,
     update_commit_index/2,
     make_snapshot_info/3,
-    load_raft_meta/1
+    load_raft_meta/1,
+    sync/1,
+    test_append/1
 ]).
 
 -export_type([
@@ -101,7 +103,9 @@
     configs,
     last_conf,
     max_segment_size,
-    snapshot_info}).
+    snapshot_info,
+    unsynced=false
+}).
 
 -type logger() :: pid().
 
@@ -141,7 +145,10 @@ append(FS, PrevIndex, PrevTerm, ToCommitIndex, Entries) ->
     async_work(FS, {append, PrevIndex, PrevTerm, ToCommitIndex, Entries}).
 
 append_leader(FS, Entries) ->
-    async_work(FS, {append_leader, Entries}).
+    gen_server:cast(FS, {append_leader, Entries}).
+
+sync(FS)->
+    gen_server:cast(FS,sync).
 
 async_work(FS, Command) ->
     Ref = make_ref(),
@@ -186,29 +193,36 @@ load_fs(PeerID) ->
 handle_call({raft_meta, Meta}, _From, State) ->
     State1 = update_metadata(State#fs{raft_meta = Meta}),
     State2 = update_metadata(State1),
-    {reply, ok, State2};
+    {reply, ok, State2,0};
 handle_call({get, log_descr}, _From, State) ->
     Res = log_descr(State),
-    {reply, Res, State};
+    {reply, Res, State,0};
 handle_call({get_term, Index}, _From, State) ->
     Val = term_at(Index, State),
-    {reply, Val, State};
+    {reply, Val, State,0};
 handle_call({get_entries, From, To}, _From, State) ->
     Entries = entries(From, To, State),
-    {reply, Entries, State};
+    {reply, Entries, State,0};
 handle_call({get, Index}, _From, State) ->
     Val = erlang:element(Index, State),
-    {reply, Val, State};
+    {reply, Val, State,0};
 handle_call({update_commit_index, Commit}, _From, State) ->
+    if
+        State#fs.unsynced->
+            #fs{open_segment = #segment{fd = ToSync}} = State,
+            ok = file:datasync(ToSync);
+        true->
+            ok
+    end,
     ToCommit = entries(State#fs.commit + 1, Commit, State),
-    State1 = State#fs{commit = Commit},
+    State1 = State#fs{commit = Commit,unsynced = false},
     {ok, Val, State2} = make_result(ToCommit, State1),
     {reply, Val, State2};
 handle_call(stop, _From, State) ->
     {stop, normal, ok, State};
 
 handle_call(_Request, _From, State) ->
-    {reply, ok, State}.
+    {reply, ok, State,0}.
 
 handle_cast({init, PeerID}, loading) ->
     State = load_fs(PeerID),
@@ -216,22 +230,41 @@ handle_cast({init, PeerID}, loading) ->
 
 handle_cast({replicate_log, ToPeer, Req}, State) ->
     handle_replicate_log(ToPeer, Req, State),
-    {noreply, State};
+    {noreply, State,0};
+handle_cast( {append_leader, Entries}, State) ->
+    State1 = append(Entries, State),
+    State2 = State1#fs{unsynced = true},
+    {noreply, State2,0};
 handle_cast({command, From, Cmd}, State) ->
     {ok, Reply, State1} = handle_command(Cmd, State),
     send_reply(From, Reply),
-    {noreply, State1};
+    {noreply, State1,0};
+handle_cast(sync,State)->
+    State1 = sync_last(State),
+    {noreply,State1};
 handle_cast(_Request, State) ->
-    {noreply, State}.
+    {noreply, State,0}.
 
+
+handle_info(timeout,State)->
+    State1 = sync_last(State),
+    {noreply,State1};
 handle_info(_Info, State) ->
-    {noreply, State}.
+    {noreply, State,0}.
 
 terminate(_Reason, #fs{open_segment = Open} = FS) ->
     close_segment(Open, FS),
     ok;
 terminate(_Reason, _) ->
     ok.
+
+
+sync_last(State=#fs{unsynced = true,open_segment = #segment{fd = ToSync}})->
+    ok = file:datasync(ToSync),
+    State#fs{unsynced = false};
+sync_last(State)->
+    %%already has been synced
+    State.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -247,10 +280,7 @@ handle_command({truncate_before, SnapshotInfo}, State) ->
     make_result(ok, State1);
 handle_command({append, PrevIndex, PrevTerm, ToCommitIndex, Entries}, State) ->
     {ok, Result, State1} = append_entry(PrevIndex, PrevTerm, ToCommitIndex, Entries, State),
-    make_result(Result, State1);
-handle_command({append_leader, Entries}, State) ->
-    State1 = append(Entries, State),
-    make_result(ok, State1).
+    make_result(Result, State1).
 
 make_result(Result, State = #fs{last_conf = Conf}) ->
     {ok, #log_op_result{last_conf = Conf, log_state = log_descr(State), result = Result}, State}.
@@ -290,7 +320,8 @@ append_entry(PrevIndex, PrevTerm, ToCommitIndex, Entries0, State) ->
                     ok
             end,
             State1 = truncate_segment_after(TruncIndex, State),
-            State2 = append(NewEntries, State1),
+            State2 = #fs{open_segment = #segment{fd = ToSync}}= append(NewEntries, State1),
+            ok = file:datasync(ToSync),
             ToCommit = entries(Commited + 1, NewCommit, State2),
             {ok, {true, NewLastIndex, ToCommit},
                 State2#fs{commit = NewCommit}};
@@ -530,8 +561,17 @@ append(Entries,
     FS = #fs{last_index = Index, open_segment = Open, closed_segments = Closed, configs = Conf}) ->
     append_entries(Index + 1, Entries, Open, FS, Closed, Open#segment.entries, Conf).
 
-append_entries(_Index, [], Open = #segment{fd = FD}, FS, Acc, LogAcc, ConfAcc) ->
-    ok = file:datasync(FD),
+test_append(Max)->
+    FS = load_fs({test,node()}),
+    Start = os:timestamp(),
+    test_append(FS,1,Max),
+    {ok,round(Max*1000000/timer:now_diff(os:timestamp(),Start))}.
+test_append(_FS,N,Max) when N>Max->
+    ok;
+test_append(FS,N,Max)->
+    test_append(append([#entry{index = N,data = {add,{1,1}},global_time = 1,term = 1,type = ?OP_DATA}],FS),N+1,Max).
+
+append_entries(_Index, [], Open, FS, Acc, LogAcc, ConfAcc) ->
     LastConf = last_conf(FS#fs.snapshot_info, ConfAcc),
     [#entry{index = LastIndex, term = LastTerm} | _] = LogAcc,
     FS#fs{
