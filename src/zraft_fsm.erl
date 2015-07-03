@@ -75,7 +75,8 @@
     dir,
     snapshot_count = 0,
     last = 0,
-    last_dir = []}).
+    last_dir = [],
+    prev_snapshot}).
 -record(snapshoter, {pid, seq, last_index, dir, mref, log_count, file, type, from}).
 
 -spec start_link(zraft_consensus:from_peer_addr(), module()) -> {ok, pid()} | {error, term()}.
@@ -691,7 +692,7 @@ stop_safe(P, Func, #snapshoter{dir = Dir, file = File}) ->
     zraft_util:del_dir(File).
 
 finish_snapshot(State) ->
-    #state{active_snapshot = Snapshot, dir = Dir, back_end = BackEnd, ustate = UState} = State,
+    #state{active_snapshot = Snapshot, dir = Dir, back_end = BackEnd, ustate = UState,last_dir = PrevLastDir} = State,
     #snapshoter{
         type = Type,
         last_index = LastSnapshotIndex,
@@ -709,6 +710,13 @@ finish_snapshot(State) ->
         last = Seq,
         last_snapshot_index = LastSnapshotIndex
     },
+    if
+        PrevLastDir==undefined orelse PrevLastDir==[]->
+             ok;
+         true ->
+             spawn(fun()->
+                 zraft_util:del_dir(PrevLastDir) end)
+    end,
     if
         Type == copy ->
             State2 = install_snapshot(State1),
