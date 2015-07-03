@@ -295,7 +295,7 @@ progress() ->
         Reply9 = #vote_reply{request_term = 6, granted = true, peer_term = 5, commit = 4},
         fake_reply(Command1_10, Reply9, Peer1),
         fake_reply(Command2_10, Reply9, Peer2),
-        timer:sleep(100),
+        timer:sleep(500),
         Res6 = zraft_consensus:stat(Peer),
         ?assertMatch(
             #peer_start{

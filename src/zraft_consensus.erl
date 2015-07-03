@@ -1218,8 +1218,14 @@ append(Entries, State = #state{log = Log,log_state = LogStatePrev}) ->
 
 update_log_state(Entries,State1=#state{log_state = LogState1})->
     #log_descr{last_index = LastIndex1} = LogState1,
+    Term = case Entries of
+               []->
+                   LogState1#log_descr.last_term;
+               _->
+                   State1#state.current_term
+           end,
     LastIndex2 = LastIndex1+length(Entries),
-    LogState2 = LogState1#log_descr{last_index = LastIndex2},
+    LogState2 = LogState1#log_descr{last_index = LastIndex2,last_term = Term},
     case maybe_new_conf(Entries,undefined) of
         undefined->
             State1#state{log_state = LogState2};
