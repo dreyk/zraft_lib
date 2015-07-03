@@ -50,6 +50,7 @@
     update_commit_index/2,
     make_snapshot_info/3,
     load_raft_meta/1,
+    sync/1,
     test_append/1
 ]).
 
@@ -144,7 +145,10 @@ append(FS, PrevIndex, PrevTerm, ToCommitIndex, Entries) ->
     async_work(FS, {append, PrevIndex, PrevTerm, ToCommitIndex, Entries}).
 
 append_leader(FS, Entries) ->
-    async_work(FS, {append_leader, Entries}).
+    gen_server:cast(FS, {append_leader, Entries}).
+
+sync(FS)->
+    gen_server:cast(FS,sync).
 
 async_work(FS, Command) ->
     Ref = make_ref(),
@@ -227,19 +231,24 @@ handle_cast({init, PeerID}, loading) ->
 handle_cast({replicate_log, ToPeer, Req}, State) ->
     handle_replicate_log(ToPeer, Req, State),
     {noreply, State,0};
+handle_cast( {append_leader, Entries}, State) ->
+    State1 = append(Entries, State),
+    State2 = State1#fs{unsynced = true},
+    {noreply, State2,0};
 handle_cast({command, From, Cmd}, State) ->
     {ok, Reply, State1} = handle_command(Cmd, State),
     send_reply(From, Reply),
     {noreply, State1,0};
+handle_cast(sync,State)->
+    State1 = sync_last(State),
+    {noreply,State1};
 handle_cast(_Request, State) ->
     {noreply, State,0}.
 
-handle_info(timeout,State=#fs{unsynced = true,open_segment = #segment{fd = ToSync}})->
-    ok = file:datasync(ToSync),
-    {noreply,State#fs{unsynced = false}};
+
 handle_info(timeout,State)->
-    %%already has been synced
-    {noreply,State};
+    State1 = sync_last(State),
+    {noreply,State1};
 handle_info(_Info, State) ->
     {noreply, State,0}.
 
@@ -248,6 +257,14 @@ terminate(_Reason, #fs{open_segment = Open} = FS) ->
     ok;
 terminate(_Reason, _) ->
     ok.
+
+
+sync_last(State=#fs{unsynced = true,open_segment = #segment{fd = ToSync}})->
+    ok = file:datasync(ToSync),
+    State#fs{unsynced = false};
+sync_last(State)->
+    %%already has been synced
+    State.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -263,10 +280,7 @@ handle_command({truncate_before, SnapshotInfo}, State) ->
     make_result(ok, State1);
 handle_command({append, PrevIndex, PrevTerm, ToCommitIndex, Entries}, State) ->
     {ok, Result, State1} = append_entry(PrevIndex, PrevTerm, ToCommitIndex, Entries, State),
-    make_result(Result, State1);
-handle_command({append_leader, Entries}, State) ->
-    State1 = append(Entries, State),
-    make_result(ok, State1#fs{unsynced = true}).
+    make_result(Result, State1).
 
 make_result(Result, State = #fs{last_conf = Conf}) ->
     {ok, #log_op_result{last_conf = Conf, log_state = log_descr(State), result = Result}, State}.

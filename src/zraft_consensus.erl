@@ -1210,14 +1210,30 @@ collect_results(Count, Ref, Acc) ->
     end.
 
 append(Entries, State = #state{log = Log,log_state = LogStatePrev}) ->
-    Async = zraft_fs_log:append_leader(Log, Entries),
-    #log_op_result{log_state = LogState1, last_conf = NewConf, result = ok} = zraft_fs_log:sync_fs(Async),
-    State1 = State#state{log_state = LogState1},
-    State2 = set_config(leader, NewConf, State1),
-    ok = update_peer_last_index(State2),
-    replicate_peer_request(?OPTIMISTIC_REPLICATE_CMD,LogStatePrev,State2, Entries),
-    State2.
+    zraft_fs_log:append_leader(Log, Entries),
+    State1 = update_log_state(Entries,State),
+    ok = update_peer_last_index(State1),
+    replicate_peer_request(?OPTIMISTIC_REPLICATE_CMD,LogStatePrev,State1, Entries),
+    State1.
 
+update_log_state(Entries,State1=#state{log_state = LogState1})->
+    #log_descr{last_index = LastIndex1} = LogState1,
+    LastIndex2 = LastIndex1+length(Entries),
+    LogState2 = LogState1#log_descr{last_index = LastIndex2},
+    case maybe_new_conf(Entries,undefined) of
+        undefined->
+            State1#state{log_state = LogState2};
+        NewConf->
+            set_config(leader, NewConf,State1#state{log_state = LogState2})
+    end.
+
+
+maybe_new_conf([#entry{index = Index,type = ?OP_CONFIG,data = Data}|T],_Acc)->
+    maybe_new_conf(T,{Index, Data});
+maybe_new_conf([_|T],Acc)->
+    maybe_new_conf(T,Acc);
+maybe_new_conf([],Acc) ->
+    Acc.
 
 
 check_blank_state(#state{current_term = T, snapshot_info = #snapshot_info{index = S}, log_state = LogState}) ->
@@ -1261,6 +1277,7 @@ update_peer(PeerID, Fun, State) ->
 lost_leadership(StateName, State) when StateName == leader orelse StateName == candidate ->
     zraft_fsm:set_state(State#state.state_fsm,follower),
     zraft_quorum_counter:set_state(State#state.quorum_counter,follower),
+    zraft_fs_log:sync(State#state.log),
     to_all_peer(?LOST_LEADERSHIP_CMD, State);
 lost_leadership(_, _State) ->
     ok.
