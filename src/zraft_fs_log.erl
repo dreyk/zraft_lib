@@ -69,7 +69,12 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
+-define(SYNC_DEFAULT_MODE,default).
+-define(SYNC_LEADER_DIRTY_MODE,leader_dirty).
+-define(SYNC_DIRTY_MODE,dirty).
+
 -define(MAX_SEGMENT_SIZE, zraft_util:get_env(max_segment_size, 10485760)).%%10 MB
+-define(SYNC_MODE,zraft_util:get_env(log_sync_mode,?SYNC_DEFAULT_MODE)).%%avaible options: default,dirty,leader_dirty
 -define(READ_BUFFER_SIZE, 1048576).%%1MB
 -define(SERVER, ?MODULE).
 
@@ -104,7 +109,8 @@
     last_conf,
     max_segment_size,
     snapshot_info,
-    unsynced=false
+    unsynced=false,
+    sync_mode
 }).
 
 -type logger() :: pid().
@@ -119,7 +125,7 @@ get_raft_meta(FS) ->
 update_raft_meta(FS, Meta) ->
     gen_server:call(FS, {raft_meta, Meta}).
 update_commit_index(FS, Commit) ->
-    gen_server:call(FS, {update_commit_index, Commit}).
+    async_work(FS,{update_commit_index, Commit}).
 
 get_term(FS, Index) ->
     gen_server:call(FS, {get_term, Index}).
@@ -182,7 +188,8 @@ load_fs(PeerID) ->
         log_dir = LogDir,
         peer_dir = PeerDir,
         peer_id = PeerID,
-        max_segment_size = ?MAX_SEGMENT_SIZE
+        max_segment_size = ?MAX_SEGMENT_SIZE,
+        sync_mode = ?SYNC_MODE
     },
     FS2 = load_meta(FS1),
     FS3 = load_fs_log(FS2),
@@ -206,18 +213,6 @@ handle_call({get_entries, From, To}, _From, State) ->
 handle_call({get, Index}, _From, State) ->
     Val = erlang:element(Index, State),
     {reply, Val, State,0};
-handle_call({update_commit_index, Commit}, _From, State) ->
-    if
-        State#fs.unsynced->
-            #fs{open_segment = #segment{fd = ToSync}} = State,
-            ok = file:datasync(ToSync);
-        true->
-            ok
-    end,
-    ToCommit = entries(State#fs.commit + 1, Commit, State),
-    State1 = State#fs{commit = Commit,unsynced = false},
-    {ok, Val, State2} = make_result(ToCommit, State1),
-    {reply, Val, State2};
 handle_call(stop, _From, State) ->
     {stop, normal, ok, State};
 
@@ -280,7 +275,19 @@ handle_command({truncate_before, SnapshotInfo}, State) ->
     make_result(ok, State1);
 handle_command({append, PrevIndex, PrevTerm, ToCommitIndex, Entries}, State) ->
     {ok, Result, State1} = append_entry(PrevIndex, PrevTerm, ToCommitIndex, Entries, State),
-    make_result(Result, State1).
+    make_result(Result, State1);
+handle_command({update_commit_index, Commit},State) ->
+    ToCommit = entries(State#fs.commit + 1, Commit, State),
+    if
+        State#fs.unsynced andalso State#fs.sync_mode == ?SYNC_DEFAULT_MODE->
+            #fs{open_segment = #segment{fd = ToSync}} = State,
+            ok = file:datasync(ToSync),
+            State1 = State#fs{commit = Commit,unsynced = false},
+            make_result(ToCommit, State1);
+        true->
+            State1 = State#fs{commit = Commit},
+            make_result(ToCommit, State1)
+    end.
 
 make_result(Result, State = #fs{last_conf = Conf}) ->
     {ok, #log_op_result{last_conf = Conf, log_state = log_descr(State), result = Result}, State}.
@@ -320,16 +327,25 @@ append_entry(PrevIndex, PrevTerm, ToCommitIndex, Entries0, State) ->
                     ok
             end,
             State1 = truncate_segment_after(TruncIndex, State),
-            State2 = #fs{open_segment = #segment{fd = ToSync}}= append(NewEntries, State1),
-            ok = file:datasync(ToSync),
+            State2 = append(NewEntries, State1),
+            State3 = maybe_sync_follower(State2),
             ToCommit = entries(Commited + 1, NewCommit, State2),
             {ok, {true, NewLastIndex, ToCommit},
-                State2#fs{commit = NewCommit}};
+                State3#fs{commit = NewCommit}};
         _ ->
             lager:warning("Rejecting AppendEntries RPC: terms don't agree"),
             {ok, {false, LastIndex}, State}
     end.
 
+maybe_sync_follower(State)->
+    if
+        State#fs.sync_mode /= ?SYNC_DIRTY_MODE->
+            #fs{open_segment = #segment{fd = ToSync}} = State,
+            ok = file:datasync(ToSync),
+            State#fs{unsynced = false};
+        true->
+            State#fs{unsynced = true}
+    end.
 maybe_trunc(_CommitIndex, [], _Segments, LastIndex) ->
     {LastIndex + 1, LastIndex, []};
 maybe_trunc(CommitIndex, [FirstToAdd | _] = Entries, Segments, _Lastindex) ->
