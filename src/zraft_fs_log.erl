@@ -242,8 +242,13 @@ handle_cast(_Request, State) ->
 
 
 handle_info(timeout,State)->
-    State1 = sync_last(State),
-    {noreply,State1};
+    if
+        State#fs.sync_mode == ?SYNC_DIRTY_MODE->
+            {noreply,State};
+        true->
+            State1 = sync_last(State),
+            {noreply,State1}
+    end;
 handle_info(_Info, State) ->
     {noreply, State,0}.
 
