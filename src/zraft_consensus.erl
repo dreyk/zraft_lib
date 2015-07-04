@@ -1037,6 +1037,7 @@ maybe_become_leader(Vote,FallBackStateName, State) ->
             } = State,
             zraft_fsm:set_state(StateFSM,leader),
             zraft_quorum_counter:set_state(Counter,leader),
+            zraft_fs_log:sync(State#state.log),
             State1 = State#state{leader = MyID, voted_for = MyID, last_hearbeat = max},
             %%reset election timer
             State2 = cancel_timer(State1),
