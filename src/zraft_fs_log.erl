@@ -242,8 +242,13 @@ handle_cast(_Request, State) ->
 
 
 handle_info(timeout,State)->
-    State1 = sync_last(State),
-    {noreply,State1};
+    if
+        State#fs.sync_mode == ?SYNC_DIRTY_MODE->
+            {noreply,State};
+        true->
+            State1 = sync_last(State),
+            {noreply,State1}
+    end;
 handle_info(_Info, State) ->
     {noreply, State,0}.
 
@@ -344,7 +349,7 @@ maybe_sync_follower(State)->
             ok = file:datasync(ToSync),
             State#fs{unsynced = false};
         true->
-            State
+            State#fs{unsynced = true}
     end.
 maybe_trunc(_CommitIndex, [], _Segments, LastIndex) ->
     {LastIndex + 1, LastIndex, []};
