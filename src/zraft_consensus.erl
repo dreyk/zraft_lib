@@ -721,7 +721,8 @@ maybe_commit_quorum(AgreeIndex,State) ->
                     {stop, {error, commit_collision}, State1};
                 {true, State1} ->
                     %%Update log
-                    #log_op_result{result = ToCommit, log_state = LogDescr1} = zraft_fs_log:update_commit_index(Log, AgreeIndex),
+                    Async = zraft_fs_log:update_commit_index(Log, AgreeIndex),
+                    #log_op_result{result = ToCommit, log_state = LogDescr1} = zraft_fs_log:sync_fs(Async),
                     #log_descr{last_index = PrevIndex, last_term = PrevTerm} = LogDescr1,
                     %%Apply commited entry to user state
                     zraft_fsm:apply_commit(State1#state.state_fsm, ToCommit),

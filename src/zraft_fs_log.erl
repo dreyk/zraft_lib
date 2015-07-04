@@ -125,7 +125,7 @@ get_raft_meta(FS) ->
 update_raft_meta(FS, Meta) ->
     gen_server:call(FS, {raft_meta, Meta}).
 update_commit_index(FS, Commit) ->
-    gen_server:call(FS, {update_commit_index, Commit}).
+    async_work(FS,{update_commit_index, Commit}).
 
 get_term(FS, Index) ->
     gen_server:call(FS, {get_term, Index}).
@@ -191,7 +191,6 @@ load_fs(PeerID) ->
         max_segment_size = ?MAX_SEGMENT_SIZE,
         sync_mode = ?SYNC_MODE
     },
-    lager:error("Sync mode ~p",[?SYNC_MODE]),
     FS2 = load_meta(FS1),
     FS3 = load_fs_log(FS2),
     FS4 = update_metadata(FS3),
@@ -214,20 +213,6 @@ handle_call({get_entries, From, To}, _From, State) ->
 handle_call({get, Index}, _From, State) ->
     Val = erlang:element(Index, State),
     {reply, Val, State,0};
-handle_call({update_commit_index, Commit}, _From, State) ->
-    ToCommit = entries(State#fs.commit + 1, Commit, State),
-    if
-        State#fs.unsynced andalso State#fs.sync_mode == ?SYNC_DEFAULT_MODE->
-            #fs{open_segment = #segment{fd = ToSync}} = State,
-            ok = file:datasync(ToSync),
-            State1 = State#fs{commit = Commit,unsynced = false},
-            {ok, Val, State2} = make_result(ToCommit, State1),
-            {reply, Val, State2};
-        true->
-            State1 = State#fs{commit = Commit},
-            {ok, Val, State2} = make_result(ToCommit, State1),
-            {reply, Val, State2}
-    end;
 handle_call(stop, _From, State) ->
     {stop, normal, ok, State};
 
@@ -290,7 +275,19 @@ handle_command({truncate_before, SnapshotInfo}, State) ->
     make_result(ok, State1);
 handle_command({append, PrevIndex, PrevTerm, ToCommitIndex, Entries}, State) ->
     {ok, Result, State1} = append_entry(PrevIndex, PrevTerm, ToCommitIndex, Entries, State),
-    make_result(Result, State1).
+    make_result(Result, State1);
+handle_command({update_commit_index, Commit},State) ->
+    ToCommit = entries(State#fs.commit + 1, Commit, State),
+    if
+        State#fs.unsynced andalso State#fs.sync_mode == ?SYNC_DEFAULT_MODE->
+            #fs{open_segment = #segment{fd = ToSync}} = State,
+            ok = file:datasync(ToSync),
+            State1 = State#fs{commit = Commit,unsynced = false},
+            make_result(ToCommit, State1);
+        true->
+            State1 = State#fs{commit = Commit},
+            make_result(ToCommit, State1)
+    end.
 
 make_result(Result, State = #fs{last_conf = Conf}) ->
     {ok, #log_op_result{last_conf = Conf, log_state = log_descr(State), result = Result}, State}.
