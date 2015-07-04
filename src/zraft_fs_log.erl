@@ -344,7 +344,7 @@ maybe_sync_follower(State)->
             ok = file:datasync(ToSync),
             State#fs{unsynced = false};
         true->
-            State#fs{unsynced = true}
+            State
     end.
 maybe_trunc(_CommitIndex, [], _Segments, LastIndex) ->
     {LastIndex + 1, LastIndex, []};
