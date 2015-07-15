@@ -54,13 +54,13 @@ Example app configuration file.
  ```
 - "election_timeout" - Timeout(in ms) used by Follower to start new election process (default 500).
 - "request_timeout" - Timeout(in ms) used by Leader to wait replication RPC reply from Follower (default 2*election_timeout).
-- "snapshot_listener_port" - Default port used for transfer snapshot.(0 - any free port).
-- "snapshot_listener_addr" - Bind Address for accept snapshot transfer connections.
-- "snapshot_backup" - If it turn on all snapshot will be archived.
+- "snapshot_listener_port" - Default port used for snapshot transfer.(0 - any free port).
+- "snapshot_listener_addr" - Bind Address for accepting snapshot transfer connections.
+- "snapshot_backup" - If it turns on, all snapshot will be archived.
 - "log_dir" - Directory to store RAFT logs and metadata.
 - "snapshot_dir" - Directory to store snapshots.
-- "max_segment_size" - Maximum size in bytes log segment.(New segment will be created after reach that threshold.)
-- "max_log_count" - Snapshot/LogTruncation process will be started after every "max_log_count" applied entries.
+- "max_segment_size" - Log segment Maximum size in bytes.(A New segment will be created after reach  in that threshold.)
+- "max_log_count" - Snapshot/LogTruncation process will be started after every "max_log_count" entries applied.
 
 ## Create and Config RAFT Cluster.
 
@@ -69,13 +69,13 @@ zraft_client:create(Peers,BackEnd).
 ```
 Parameters:
 - `Peers` - lists of cluster peers, e.g. `[{test1,'test1@host1'},{test1,'test2@host2'},{other_test,'test3@host3'}]`.
-- `BackEnd` - module name used for apply user requests.
+- `BackEnd` - module name used to apply user's requests.
 
 Possible return values:
- - `{ok,Peers}` - cluster has created.
- - `{error,{PeerID,Error}}` - can't create PeerID, error is Error.
- - `{error,[{PeerID,Error}]}` - can't create peers.
- - `{error,Reason}` - cluster has created, but applying new configuration has failed with reason Reason.
+ - `{ok,Peers}` - cluster has been created.
+ - `{error,{PeerID,Error}}` - PeerID can't be created due to "Error".
+ - `{error,[{PeerID,Error}]}` - Peers can't be created.
+ - `{error,Reason}` - cluster has been created, but the application of new configuration has failed due to "Reason".
 
 
 ## Basic operations.
@@ -91,7 +91,7 @@ zraft_client:light_session(PeerID,FailTimeout,ElectionTimeout).
 Parameters:
 - `PeerID` - ID of peer from luster.
 - `FailTimeout` - If we detect that peer has failed,then we will not send any request to this peer during this Interval.
-- `ElectionTimeout` - If we detect that peer isn't leader,then wee not send any request to this peer during this Interval.
+- `ElectionTimeout` - If we detect that peer isn't a leader,then we will not send any request to this peer during this Interval.
 
 Possible return values:
 - `LightSession` - Light Session object.
