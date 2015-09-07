@@ -1134,7 +1134,7 @@ set_config(_StateName, ?BLANK_CONF, State) ->
 set_config(_StateName, PConf, State = #state{config = #config{conf = PConf}}) ->
     State;
 set_config(StateName, {ConfID, #pconf{old_peers = Old, new_peers = New}} = PConf,
-    State = #state{log_state = LogState, id = PeerID, back_end = BackEnd, peers = OldPeers}) ->
+    State = #state{log_state = LogState, id = PeerID, back_end = BackEnd, peers = OldPeers,state_fsm = FSM}) ->
     NewPeersSet = ordsets:union([[PeerID], Old, New]),
     #log_descr{last_index = LastIndex, last_term = LastTerm, commit_index = Commit} = LogState,
     HearBeat = if
@@ -1150,6 +1150,7 @@ set_config(StateName, {ConfID, #pconf{old_peers = Old, new_peers = New}} = PConf
                     _ ->
                         ?TRANSITIONAL_CONF
                 end,
+    zraft_fsm:notify_sessions(FSM,{new_config,Old}),
     zraft_quorum_counter:set_conf(State#state.quorum_counter,PConf,ConfState),
     NewPeers = join_peers({peer(PeerID),State#state.quorum_counter, BackEnd, HearBeat}, NewPeersSet, OldPeers, []),
     NewConf = #config{id = ConfID, old_peers = Old, new_peers = New, conf = PConf, state = ConfState},

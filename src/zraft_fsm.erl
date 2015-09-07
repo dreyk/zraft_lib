@@ -38,7 +38,9 @@
     apply_commit/2,
     stop/1,
     set_state/2,
-    stat/1
+    stat/1,
+    notify_sessions/2,
+    remove_data/1
 ]).
 
 -include("zraft.hrl").
@@ -100,9 +102,19 @@ stop(P) ->
 cmd(FSM, Request) ->
     gen_server:cast(FSM, Request).
 
+-spec notify_sessions(pid(),term())->ok.
+notify_sessions(FSM,Msg)->
+    gen_server:cast(FSM,{notify_sessions,Msg}).
+
 -spec stat(pid())->#fsm_stat{}.
 stat(P)->
     gen_server:call(P,stat).
+
+-spec remove_data(zraft_consensus:peer_id())->ok|{error,term()}.
+remove_data(PeerID)->
+    PeerDirName = zraft_util:peer_name_to_dir_name(zraft_util:peer_name(PeerID)),
+    PeerDir = filename:join([?DATA_DIR, PeerDirName]),
+    zraft_util:del_dir(PeerDir).
 
 init([Raft, BackEnd]) ->
     gen_server:cast(self(), init),
@@ -142,6 +154,9 @@ handle_cast(init, State) ->
     delayed_init(State);
 handle_cast({set_state, StateName}, State) ->
     change_raft_state(StateName, State);
+handle_cast({notify_sessions,Msg},State)->
+    notify_user_sessions(Msg,State),
+    {noreply,State};
 handle_cast({copy_timeout, From, Index},
     State = #state{active_snapshot = #snapshoter{from = From, last_index = Index}}) ->
     State1 = discard_snapshot({error, hearbeat_fail}, State),
@@ -839,6 +854,15 @@ reply_caller(undeined, _) ->
     ok;
 reply_caller(From, Msg) ->
     zraft_consensus:reply_caller(From, Msg).
+
+notify_user_sessions(Msg,#state{monitors = M})->
+    ets:foldl(fun(O, Acc) ->
+        case O of
+            {From, _MRef, _, _} ->
+                From ! Msg;
+            _->
+                ok
+        end, Acc end, 0, M).
 
 change_raft_state(RaftState, State = #state{raft_state = RaftState}) ->
     {noreply, State};

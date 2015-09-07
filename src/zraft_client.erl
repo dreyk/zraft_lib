@@ -31,7 +31,8 @@
     create/2,
     create/3,
     set_new_conf/4,
-    check_exists/1
+    check_exists/1,
+    clear_peer_data/1
 ]).
 
 -export_type([
@@ -184,7 +185,10 @@ set_new_conf(PeerID, NewPeers, OldPeers, Timeout) ->
             case ordsets:from_list(OldPeers) of
                 HasPeers ->
                     case catch zraft_consensus:set_new_configuration(Leader, Index, NewSorted, Timeout) of
-                        ok -> {ok, NewPeers};
+                        ok ->
+                            ToRemove = OldPeers--NewPeers,
+                            [clear_old_peer(P)||P<-ToRemove],
+                            {ok, NewPeers};
                         {leader, _NewLeader} ->
                             {error, leader_changed};
                         Else ->
@@ -196,6 +200,41 @@ set_new_conf(PeerID, NewPeers, OldPeers, Timeout) ->
         Else ->
             Else
     end.
+
+clear_old_peer(Peer)->
+    clear_old_peer(Peer,1,undefined).
+
+clear_old_peer(Peer,10,Error) ->
+    lager:error("Can't remove data from old peer ~p. ~p",[Peer,Error]),
+    Error;
+clear_old_peer(Peer,Attempt,_) ->
+    case catch zraft_consensus:stop(Peer) of
+        ok ->
+            clear_peer_data(Peer);
+        {'EXIT',{noproc,_}} ->
+            clear_peer_data(Peer);
+        {'EXIT',Reason}->
+            timer:sleep(1000),
+            clear_old_peer(Peer,Attempt+1,{error,Reason})
+    end.
+
+clear_peer_data({_Name, Node} = Peer) when Node =:= node() ->
+    T1 = case zraft_fs_log:remove_data(Peer) of
+             ok ->
+                 ok;
+             Else1 ->
+                 lager:error("Can't clean log data for old peer ~p. ~p", [Peer, Else1]),
+                 Else1
+         end,
+    case zraft_fsm:remove_data(Peer) of
+        ok ->
+            T1;
+        Else2 ->
+            lager:error("Can't clean log data for old peer ~p. ~p", [Peer, Else2]),
+            Else2
+    end;
+clear_peer_data({_Name, Node} = Peer) ->
+    rpc:call(Node,?MODULE,clear_peer_data,[Peer]).
 %%%===================================================================
 %%% Create new quorum
 %%%===================================================================
@@ -278,7 +317,7 @@ start_peers(UseBackEnd, [P | T]) ->
         {error, Reason} ->
             {error, {P, Reason}}
     end;
-start_peers(_UseBackEnd, [])->
+start_peers(_UseBackEnd, []) ->
     ok.
 
 -spec check_exists(zraft_consensus:peer_id()) -> ok | {error, exists}.
@@ -325,7 +364,7 @@ peer_execute(PeerID, Fun, Start, Timeout) ->
                 {false, _Timeout1} ->
                     peer_execute(NewLeader, Fun, os:timestamp(), Timeout)
             end;
-        {error, loading}->
+        {error, loading} ->
             case zraft_util:is_expired(Start, Timeout) of
                 true ->
                     {error, timeout};
@@ -350,7 +389,7 @@ peer_execute_sessions(Session, Fun, Start, Timeout) ->
                        Session1 ->
                            {continue, Session1}
                    end;
-               {error, loading}->
+               {error, loading} ->
                    {continue, Session};
                _Else ->
                    case zraft_session_obj:fail(Session) of

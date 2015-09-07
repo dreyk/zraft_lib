@@ -28,7 +28,8 @@
     fail/1,
     reset/1,
     leader/1,
-    is_session/1
+    is_session/1,
+    peers/1
 ]).
 
 -export_type([
@@ -61,6 +62,10 @@ create([F | _] = Peers, BackOff,ElectionTimeout) ->
         backoff = BackOff * 1000,
         election_timeout = ElectionTimeout*1000
     }.
+
+-spec peers(light_session())->list(zraft_consensus:peer_id()).
+peers(#light_session{peers = Peers})->
+    lists:usort([P||{P,_}<-Peers]).
 
 -spec set_leader(zraft_consensus:peer_id(), light_session())->light_session().
 set_leader(NewLeader,SObj = #light_session{peers = Peers})->

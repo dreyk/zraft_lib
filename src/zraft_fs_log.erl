@@ -51,7 +51,8 @@
     make_snapshot_info/3,
     load_raft_meta/1,
     sync/1,
-    test_append/1
+    test_append/1,
+    remove_data/1
 ]).
 
 -export_type([
@@ -169,6 +170,12 @@ sync_fs(Sync) ->
         {Sync, Result} ->
             Result
     end.
+
+-spec remove_data(zraft_consensus:peer_id())->ok|{error,term()}.
+remove_data(PeerID)->
+    PeerDirName = zraft_util:peer_name_to_dir_name(zraft_util:peer_name(PeerID)),
+    PeerDir = filename:join([?DATA_DIR, PeerDirName]),
+    zraft_util:del_dir(PeerDir).
 
 start_link(PeerID) ->
     gen_server:start_link(?MODULE, [PeerID], []).

@@ -87,6 +87,7 @@ random(N) ->
 random(Prefix,N) ->
     erlang:phash2({Prefix,erlang:statistics(io)}, N).
 
+-spec del_fir(file:filename())->ok|{error,term()}.
 del_dir(Dir)->
     case del_dir1(Dir) of
         {error,enoent}->

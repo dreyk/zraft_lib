@@ -241,7 +241,22 @@ handle_info({timeout, TimerRef, connect_timeout}, State = #state{timer = TimerRe
 handle_info({timeout, TimerRef, {request, ReqRef}}, State) ->
     State1 = request_timeout(TimerRef, ReqRef, State),
     {noreply, State1};
-
+handle_info({new_config,NewPeersUnsorted}, State) ->
+    NewPeers = lists:usort(NewPeersUnsorted),
+    case zraft_session_obj:peers(State#state.session) of
+        NewPeers->
+            {noreply, State};
+        _->
+            ETime = zraft_consensus:get_election_timeout(),
+            FreashSession = zraft_client:light_session(NewPeers, ETime * 4, ETime*2),
+            case install_leader(State#state{session = FreashSession}) of
+                {false,State1}->
+                    {noreply,State1};
+                {true,State1}->
+                    State2 = restart_requets(State1),
+                    {noreply,State2}
+            end
+    end;
 handle_info(_Info, State) ->
     {noreply, State}.
 
