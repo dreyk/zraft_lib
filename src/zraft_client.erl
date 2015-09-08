@@ -375,10 +375,10 @@ peer_execute_sessions(Session, Fun, Start, Timeout) ->
 
 %% @private
 wait_stable_conf(Peer, Timeout) ->
-    wait_stable_conf(Peer, os:timestamp(), Timeout).
+    wait_stable_conf(Peer,[], os:timestamp(), Timeout).
 
 %% @private
-wait_stable_conf(Peer, Start, Timeout) ->
+wait_stable_conf(Peer,FallBack, Start, Timeout) ->
     case zraft_util:is_expired(Start, Timeout) of
         true ->
             {error, timeout};
@@ -386,19 +386,28 @@ wait_stable_conf(Peer, Start, Timeout) ->
             case catch zraft_consensus:get_conf(Peer, Timeout) of
                 {leader, undefined} ->
                     timer:sleep(zraft_consensus:get_election_timeout()),
-                    wait_stable_conf(Peer, Start, Timeout);
+                    wait_stable_conf(Peer,FallBack, Start, Timeout);
                 {leader, NewLeader} ->
-                    wait_stable_conf(NewLeader, Start, Timeout);
+                    wait_stable_conf(NewLeader,[Peer|FallBack],Start, Timeout);
+                {error, loading}->
+                    timer:sleep(zraft_consensus:get_election_timeout()),
+                    wait_stable_conf(Peer,FallBack,Start, Timeout);
                 {ok, {0, _}} ->
                     timer:sleep(zraft_consensus:get_election_timeout()),
-                    wait_stable_conf(Peer, Start, Timeout);
+                    wait_stable_conf(Peer,FallBack,Start, Timeout);
                 {ok, {Index, Peers}} ->
                     {ok, {Peer, Index, Peers}};
                 retry ->
                     timer:sleep(zraft_consensus:get_election_timeout()),
-                    wait_stable_conf(Peer, Start, Timeout);
+                    wait_stable_conf(Peer,FallBack,Start, Timeout);
                 Error ->
-                    format_error(Error)
+                    lager:error("Can'r read conf from ~p:~p",[Peer,Error]),
+                    case FallBack of
+                        []->
+                            format_error(Error);
+                        [TryOld|Other]->
+                            wait_stable_conf(TryOld,Other,Start, Timeout)
+                    end
             end
     end.
 

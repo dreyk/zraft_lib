@@ -530,7 +530,7 @@ handle_event(Req = #read_request{}, leader,
     replicate_peer_request(?OPTIMISTIC_REPLICATE_CMD, State1, []),
     {next_state, leader, State1};
 handle_event(#read_request{args = [From|_]}, StateName, State) ->
-    reply_caller(From,{leader, State#state.leader}),
+    reply_caller(From,{leader, current_leader(State)}),
     {next_state,StateName, State};
 handle_event(Req=#write{}, leader, State) ->
     %%Try replicate new entry.
@@ -546,7 +546,7 @@ handle_event(#write{}, StateName, State) ->
     %%Ignore request
     {next_state, StateName, State};
 handle_event(#swrite{from = From,message_id = Seq}, StateName, State) ->
-    reply_caller(From,#swrite_error{sequence = Seq,leader = State#state.leader,error = not_leader}),
+    reply_caller(From,#swrite_error{sequence = Seq,leader = current_leader(State),error = not_leader}),
     {next_state, StateName, State};
 handle_event(_Event, StateName, State) ->
     {next_state, StateName, State}.
@@ -622,7 +622,7 @@ handle_sync_event(Req = #read_request{args = Args}, From, leader,
 handle_sync_event(#read_request{}, _From, StateName, State) ->
     %%Lost lidership
     %%Hint new leader in respose
-    {reply, {leader, State#state.leader}, StateName, State};
+    {reply, {leader, current_leader(State)}, StateName, State};
 handle_sync_event(Req = #write{}, From, leader, State) ->
     %%Try replicate new entry.
     %%Response will be sended after entry will be ready to commit
@@ -632,13 +632,13 @@ handle_sync_event(Req = #write{}, From, leader, State) ->
 handle_sync_event(#write{}, _From, StateName, State) ->
     %%Lost lidership
     %%Hint new leader in respose
-    {reply, {leader, State#state.leader}, StateName, State};
+    {reply, {leader, current_leader(State)}, StateName, State};
 handle_sync_event(Req = #conf_change_requet{}, From, leader, State) ->
     change_configuration(Req#conf_change_requet{from = From}, State);
 handle_sync_event(#conf_change_requet{}, _From, StateName, State) ->
     %%Lost lidership
     %%Hint new leader in respose
-    {reply, {leader, State#state.leader}, StateName, State};
+    {reply, {leader, current_leader(State)}, StateName, State};
 %%%===================================================================
 %%% JUST FOR TESTS
 %%%===================================================================
@@ -1128,6 +1128,17 @@ change_configuration(Req = #conf_change_requet{peers = Peers}, State) ->
             State2 = append([NewConfEntry], State1),
             {next_state, leader, State2}
     end.
+
+%%Thanks to Matthias Kretschmer for debugging.
+current_leader(#state{leader = Leader,config = #config{conf = {_,#pconf{old_peers=Peers}}}})->
+    case ordsets:is_element(Leader,Peers) of
+        true->
+            Leader;
+        _->
+            undefined
+    end;
+current_leader(#state{config = ?BLANK_CONF})->
+    undefined.
 
 set_config(_StateName, ?BLANK_CONF, State) ->
     State#state{config = ?BLANK_CONF};
