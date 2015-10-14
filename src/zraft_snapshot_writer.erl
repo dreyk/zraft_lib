@@ -122,15 +122,16 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 maybe_finish(State=
     #state{descr_done = true,data_done = true,result_file = Res,snap_dir = Snapshot})->
-    matbe_make_snapshot_backup(Res,Snapshot),
+    maybe_make_snapshot_backup(Res,Snapshot),
     {stop,normal,State};
 maybe_finish(State)->
     {noreply,State}.
 
-matbe_make_snapshot_backup(undefined,_)->
+maybe_make_snapshot_backup(undefined,_)->
     ok;
-matbe_make_snapshot_backup(Res,Snapshot)->
-    {ok,_}=zip:zip(Res,[Snapshot]).
+maybe_make_snapshot_backup(Res,Snapshot)->
+    {ok,_}=zip:zip(Res,[Snapshot]),
+    ok.
 
 write_header(Info,State)->
     State1 = State#state{descr_done = true},
