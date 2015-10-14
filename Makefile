@@ -12,3 +12,10 @@ deps:
 
 compile: deps
 	$(REBAR) compile
+
+clean:
+	$(REBAR) clean
+
+distclean: clean
+	$(REBAR) delete-deps
+
