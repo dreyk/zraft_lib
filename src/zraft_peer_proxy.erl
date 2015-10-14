@@ -109,7 +109,7 @@ handle_call(force_hearbeat_timeout, _, State = #state{hearbeat_timer = Timer}) -
         Timer == undefined ->
             {reply, no_timer, State};
         true ->
-            zraft_util:gen_server_cancel_timer(Timer),
+            _ = zraft_util:gen_server_cancel_timer(Timer),
             Timer1 = zraft_util:gen_server_cast_after(0, hearbeat_timeout),
             {reply, ok, State#state{hearbeat_timer = Timer1}}
     end;
@@ -118,7 +118,7 @@ handle_call(force_request_timeout, _, State = #state{request_timer = Timer}) ->
         Timer == undefined ->
             {reply, no_timer, State};
         true ->
-            zraft_util:gen_server_cancel_timer(Timer),
+            _ = zraft_util:gen_server_cancel_timer(Timer),
             Timer1 = zraft_util:gen_server_cast_after(1, request_timeout),
             {reply, ok, State#state{request_timer = Timer1}}
     end;
@@ -437,8 +437,8 @@ reset_snapshot(State = #state{snapshot_progres = #snapshot_progress{mref = Ref, 
     State#state{snapshot_progres = undefined,append_buffer = undefined}.
 
 reset_timers(Result, State = #state{request_timer = RT, hearbeat_timer = HT}) ->
-    cancel_timer(RT),
-    cancel_timer(HT),
+    _ = cancel_timer(RT),
+    _ = cancel_timer(HT),
     State1 = State#state{
         request_ref = undefined,
         request_timer = undefined,
