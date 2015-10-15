@@ -10,3 +10,5 @@ doc
 *.iml
 .rebar
 .idea
+.local_dialyzer_plt
+.combo_dialyzer_plt

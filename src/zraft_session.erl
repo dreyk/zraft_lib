@@ -161,7 +161,7 @@ handle_info(#swrite_reply{sequence = ?CLIENT_CONNECT}, State = #state{connected 
     %%we can send connect request twice
     {noreply,State};
 handle_info(#swrite_reply{sequence = ?CLIENT_CONNECT}, State = #state{epoch = E,timer = TRef}) ->
-    cancel_timer(TRef),
+    _ = cancel_timer(TRef),
     State1 = restart_requets(State#state{connected = true,epoch = E+1,timer=undefined}),
     State2 = ping(State1),
     {noreply, State2};
@@ -261,7 +261,7 @@ pending(State) ->
 
 
 ping(State = #state{timer = Timer, timeout = Timeout,last_send = Last}) ->
-    cancel_timer(Timer),
+    _ = cancel_timer(Timer),
     PingTimeout = Timeout div 2,
     case zraft_util:is_expired(Last,PingTimeout) of
         true->
@@ -290,7 +290,7 @@ connect(State = #state{timeout = Timeout}) ->
     end.
 
 stop_session(State = #state{acc_upto = To, timer = Timer}) ->
-    cancel_timer(Timer),
+    _ = cancel_timer(Timer),
     Req = #swrite{message_id = ?CLIENT_CLOSE, from = self(), data = <<>>, acc_upto = To},
     write_to_raft(true,Req, State).
 
@@ -318,13 +318,13 @@ caller_down(Caller, MRef, State = #state{requests = Requests, watchers = Watcher
     ets:delete(Watchers, Caller),
     case ets:lookup(Requests, MRef) of
         [{MRef, _, _From, TRef, _}] ->
-            cancel_timer(TRef),
+            _ = cancel_timer(TRef),
             ets:delete(Requests, MRef),
             State;
         [{MRef, ID}] ->
             case ets:lookup(Requests, ID) of
                 [{ID, _Req, _From, TRef, MRef, _E}] ->
-                    cancel_timer(TRef),
+                    _ = cancel_timer(TRef),
                     ets:delete(Requests, ID),
                     ets:delete(Requests, MRef),
                     update_upto(State);
@@ -365,7 +365,7 @@ read_reply(Ref, Result, State = #state{requests = Requests}) ->
             register_watcher(Req, State),
             gen_server:reply(From, Result),
             erlang:demonitor(Ref),
-            cancel_timer(TRef),
+            _ = cancel_timer(TRef),
             ets:delete(Requests, Ref),
             State;
         _ ->
@@ -397,7 +397,7 @@ write_reply(ID, Result, State = #state{requests = Requests}) ->
         [{ID, _Req, From, TRef, MRef, _Epoch}] ->
             gen_server:reply(From, Result),
             erlang:demonitor(MRef),
-            cancel_timer(TRef),
+            _ = cancel_timer(TRef),
             ets:delete(Requests, ID),
             ets:delete(Requests, MRef),
             State1 = update_upto(State),
