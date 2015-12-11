@@ -193,14 +193,11 @@ load_fs(PeerID) ->
     },
     FS2 = load_meta(FS1),
     FS3 = load_fs_log(FS2),
-    FS4 = update_metadata(FS3),
-    FS5 = update_metadata(FS4),
-    FS5.
+    update_metadata(FS3).
 
 handle_call({raft_meta, Meta}, _From, State) ->
     State1 = update_metadata(State#fs{raft_meta = Meta}),
-    State2 = update_metadata(State1),
-    {reply, ok, State2,0};
+    {reply, ok, State1, 0};
 handle_call({get, log_descr}, _From, State) ->
     Res = log_descr(State),
     {reply, Res, State,0};
@@ -424,8 +421,7 @@ truncate_segment_before(Snaphot = #snapshot_info{index = Commit},
     LastConf = last_conf(Snaphot, Conf2),
     NewCommitIndex = max(OldCommitIndex, Commit),
     FS3 = FS2#fs{first_index = Commit + 1, commit = NewCommitIndex, configs = Conf2, last_conf = LastConf, snapshot_info = Snaphot},
-    FS4 = update_metadata(FS3),
-    update_metadata(FS4).
+    update_metadata(FS3).
 
 truncate_segments_before(Commit, FS,
     [#segment{last_index = Last, firt_index = First} = S | T], Acc) when Last > Commit ->
