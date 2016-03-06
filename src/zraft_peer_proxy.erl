@@ -196,7 +196,7 @@ handle_cast({?BECOME_LEADER_CMD, HearBeat},
     {noreply, State5};
 
 handle_cast({?OPTIMISTIC_REPLICATE_CMD, _Req},
-    State = #state{backoff = Ref}) when Ref /= undefined ->
+    State = #state{backoff_timeout = T}) when T /= undefined ->
     {noreply,State};
 handle_cast({?OPTIMISTIC_REPLICATE_CMD, Req},
     State = #state{request_ref = Ref}) when Ref /= undefined ->
@@ -721,8 +721,9 @@ commands() ->
                 prev_log_term = 5,
                 term = 6}}),
         R17 = wait_request(),
+        ?debugFmt("Myst ~p",[R17]),
         ?assertMatch(
-            {cmd, #append_entries{entries = [1], prev_log_index = 5, prev_log_term = 5, term = 6, epoch = 4}},
+            {replicate_log,#append_entries{entries = true, prev_log_index = 5}},
             R17
         ),
         fake_append_reply(Proxy, R17, #append_reply{term = 6, last_index = 6, agree_index = 6, success = true}),
