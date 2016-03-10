@@ -65,7 +65,7 @@
     append_buffer,
     current_term = 0,
     current_epoch = 0,
-    back_end, request_timeout, snapshot_progres}).
+    back_end, request_timeout, snapshot_progres,backoff,backoff_timeout}).
 
 
 stat(Peer,From)->
@@ -141,25 +141,32 @@ handle_cast({peer_up,From},State=#state{request_ref = Ref})->
         Ref == undefined->
             %%remote peer has been restarted
             %%no active request jsut set new pid
-            {noreply,State#state{remote_peer_id = From}};
+            State1 = cancel_backoff(State),
+            {noreply,State1#state{remote_peer_id = From}};
         true->
             %%remote peer has been restarted
             %%send new requests
-            progress(State#state{remote_peer_id = From})
+            State1 = cancel_backoff(State),
+            progress(State1#state{remote_peer_id = From})
     end;
 handle_cast(?LOST_LEADERSHIP_CMD,
     State = #state{peer = Peer}) ->
     State1 = reset_timers(true, State),
     State2 = reset_snapshot(State1),
-    State3 = State2#state{append_buffer = undefined,peer = Peer#peer{has_vote = false, epoch = 0}, current_term = 0},
-    {noreply, State3};
+    State3 = cancel_backoff(State2),
+    State4 = State3#state{append_buffer = undefined,peer = Peer#peer{has_vote = false, epoch = 0}, current_term = 0},
+    {noreply, State4};
+
+handle_cast(backoff_timeout, State = #state{backoff = Ref}) when Ref /= undefined ->
+    ?INFO(State,"wake up backoff"),
+    progress(State#state{backoff = undefined,force_hearbeat = true});
 handle_cast(hearbeat_timeout, State = #state{request_ref = Ref}) when Ref /= undefined ->
     {noreply, State};
 handle_cast(hearbeat_timeout, State) ->%%send new hearbeat
     case State#state.snapshot_progres of
         undefined ->
-            State2 = start_replication(State),
-            {noreply, State2};
+            State1 = start_replication(State),
+            {noreply, State1};
         _ ->
             %%Send herabeat to check update peer state
             State2 = install_snapshot_hearbeat(hearbeat, State),
@@ -169,26 +176,28 @@ handle_cast(request_timeout, State = #state{request_ref = undefined}) ->
     ?WARNING(State,"There is't active request"),
     {noreply, State};
 handle_cast(request_timeout, State) ->%%send new request
-    State1 = reset_timers(false, State),
-    State2 = reset_snapshot(State1),%%May be snapshot is being copied
-    State3 = start_replication(State2#state{append_buffer = undefined}),%%Start new attempt
-    {noreply, State3};
+    State1 = backoff(State),
+    {noreply, State1};
 
 handle_cast({?BECOME_LEADER_CMD, HearBeat},
     State = #state{peer = Peer}) ->%%peer has elected
     #append_entries{term = CurrentTerm, epoch = Epoch, prev_log_index = LastLogIndex} = HearBeat,
     State1 = reset_timers(true, State),%%discard all active requets
     State2 = reset_snapshot(State1),%%stop copy snaphsot
-    State3 = State2#state{
+    State3 = cancel_backoff(State2),
+    State4 = State3#state{
         force_hearbeat = true,%% We must match followers log before start replication
         current_term = CurrentTerm,
         current_epoch = Epoch,
         peer = Peer#peer{last_agree_index = 0, next_index = LastLogIndex + 1},
         append_buffer = undefined
     },
-    State4 = replicate(HearBeat, State3),
-    {noreply, State4};
+    State5 = replicate(HearBeat, State4),
+    {noreply, State5};
 
+handle_cast({?OPTIMISTIC_REPLICATE_CMD, _Req},
+    State = #state{backoff_timeout = T}) when T /= undefined ->
+    {noreply,State};
 handle_cast({?OPTIMISTIC_REPLICATE_CMD, Req},
     State = #state{request_ref = Ref}) when Ref /= undefined ->
     %%prev request has't finished yet
@@ -216,6 +225,10 @@ handle_cast({?OPTIMISTIC_REPLICATE_CMD, Req}, State) ->%%snapshot are being copi
     State2 = install_snapshot_hearbeat(hearbeat, State1),
     {noreply, State2};
 
+handle_cast(#append_reply{},State = #state{backoff = Ref}) when Ref /= undefined ->
+    State1 = cancel_backoff(State),
+    ?INFO(State,"Backof repler force hearbeat"),
+    progress(State1#state{force_hearbeat = true});
 handle_cast(#append_reply{from_peer = From,epoch = Epoch, success = true, agree_index = Index, request_ref = RF},
     State = #state{force_request = FR, request_ref = RF}) ->
     State1 = update_peer(Index, Index + 1, Epoch,From,State),
@@ -422,6 +435,31 @@ install_snapshot_hearbeat(Type, State) ->
     zraft_peer_route:cmd(PeerID, NewReq),
     Timer = zraft_util:gen_server_cast_after(Timeout, request_timeout),
     State#state{request_ref = RequestRef, request_timer = Timer,request_time = os:timestamp()}.
+
+cancel_backoff(State=#state{backoff = undefined,backoff_timeout = undefined})->
+    State;
+cancel_backoff(State=#state{backoff = Ref})->
+    _ = cancel_timer(Ref),
+    State#state{backoff = undefined,backoff_timeout = undefined}.
+
+backoff(State)->
+    ?INFO(State,"To backoff"),
+    State1 = reset_timers(true, State),
+    State2 = reset_snapshot(State1),%%May be snapshot is being copied
+    State3 = State2#state{append_buffer = undefined},
+    #state{backoff_timeout = T,backoff = BackOffTimer} = State3,
+    _ = cancel_timer(BackOffTimer),
+    T1 = if
+             T == undefined->
+                 1;
+             T>9->
+                 T;
+             true ->
+                 T+1
+         end,
+    ETimeout = zraft_consensus:get_election_timeout()*T1,
+    Timer = zraft_util:gen_server_cast_after(ETimeout,backoff_timeout),
+    State3#state{backoff = Timer,backoff_timeout = T1}.
 
 reset_snapshot(State = #state{snapshot_progres = undefined}) ->
     State;
@@ -683,8 +721,9 @@ commands() ->
                 prev_log_term = 5,
                 term = 6}}),
         R17 = wait_request(),
+        ?debugFmt("Myst ~p",[R17]),
         ?assertMatch(
-            {cmd, #append_entries{entries = [1], prev_log_index = 5, prev_log_term = 5, term = 6, epoch = 4}},
+            {replicate_log,#append_entries{entries = true, prev_log_index = 5}},
             R17
         ),
         fake_append_reply(Proxy, R17, #append_reply{term = 6, last_index = 6, agree_index = 6, success = true}),
@@ -746,7 +785,7 @@ wait_request() ->
         Req ->
             Req
     after 2000 ->
-        ?assert(fase)
+        ?assert(false)
     end.
 
 fake_append_reply(PeerID, {_, #append_entries{request_ref = Ref, from = From, epoch = Epoch}}, Reply) ->
