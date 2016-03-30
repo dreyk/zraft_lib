@@ -23,7 +23,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/1]).
+-export([start_link/2]).
 
 -export([init/1,
     handle_call/3,
@@ -37,7 +37,6 @@
     sync_fs/1,
     append/5,
     max_segment_size/0,
-    load_fs/1,
     get_raft_meta/1,
     update_raft_meta/2,
     get_last_conf/1,
@@ -170,14 +169,14 @@ sync_fs(Sync) ->
             Result
     end.
 
-start_link(PeerID) ->
-    gen_server:start_link(?MODULE, [PeerID], []).
+start_link(PeerID,BackEnd) ->
+    gen_server:start_link(?MODULE, [PeerID,BackEnd], []).
 
-init([PeerID]) ->
-    gen_server:cast(self(), {init, PeerID}),
+init([PeerID,BackEnd]) ->
+    gen_server:cast(self(), {init,BackEnd,PeerID}),
     {ok, loading}.
 
-load_fs(PeerID) ->
+load_fs(BackEnd,PeerID) ->
     PeerDirName = zraft_util:peer_name_to_dir_name(zraft_util:peer_name(PeerID)),
     PeerDir = filename:join([?DATA_DIR, PeerDirName]),
     LogDir = filename:join(PeerDir, "log"),
@@ -191,7 +190,7 @@ load_fs(PeerID) ->
         max_segment_size = ?MAX_SEGMENT_SIZE,
         sync_mode = ?SYNC_MODE
     },
-    FS2 = load_meta(FS1),
+    FS2 = load_meta(BackEnd,FS1),
     FS3 = load_fs_log(FS2),
     update_metadata(FS3).
 
@@ -216,8 +215,8 @@ handle_call(stop, _From, State) ->
 handle_call(_Request, _From, State) ->
     {reply, ok, State,0}.
 
-handle_cast({init, PeerID}, loading) ->
-    State = load_fs(PeerID),
+handle_cast({init,BackEnd,PeerID}, loading) ->
+    State = load_fs(BackEnd,PeerID),
     {noreply, State};
 
 handle_cast({replicate_log, ToPeer, Req}, State) ->
@@ -579,7 +578,7 @@ append(Entries,
     append_entries(Index + 1, Entries, Open, FS, Closed, Open#segment.entries, Conf).
 
 test_append(Max)->
-    FS = load_fs({test,node()}),
+    FS = load_fs(test,{test,node()}),
     Start = os:timestamp(),
     test_append(FS,1,Max),
     {ok,round(Max*1000000/timer:now_diff(os:timestamp(),Start))}.
@@ -847,10 +846,10 @@ update_metadata(FS = #fs{meta_version = Version, first_index = Index, peer_dir =
     ok = file:write_file(FName, term_to_binary(#meta{version = NewVersion, first = Index, raft_meta = RaftMeta})),
     FS#fs{meta_version = NewVersion}.
 
-load_meta(FS = #fs{peer_dir = Dir,peer_id = ID}) ->
+load_meta(BackEnd,FS = #fs{peer_dir = Dir,peer_id = ID}) ->
     Meta2 = #meta{version = V2} = case read_meta_file(filename:join(Dir, "meta2.info")) of
                                       {error, _} ->
-                                          #meta{version = 1, first = 1,raft_meta = #raft_meta{id = ID}};
+                                          #meta{version = 1, first = 1,raft_meta = #raft_meta{id = ID,back_end = BackEnd}};
                                       M ->
                                           M
                                   end,
@@ -1107,7 +1106,7 @@ check_max_size() ->
 new_append() ->
     {"new append", fun() ->
         zraft_util:del_dir(?DATA_DIR),
-        Log = load_fs({test, node()}),
+        Log = load_fs(test,{test, node()}),
         LogEntriesTest = ?INITIAL_ENTRY,
         {ok, OpRes, Log1} = handle_command({append, 0, 0, 0, LogEntriesTest}, Log),
         check_op_result(1, 7, 8, 0, {7, <<"g">>}, OpRes),
@@ -1134,7 +1133,7 @@ new_append() ->
         ),
         Entries1 = entries(1, 7, Log1),
         ?assertEqual(LogEntriesTest, Entries1),
-        Log2 = load_fs({test, node()}),
+        Log2 = load_fs(test,{test, node()}),
         File3 = test_log_file_name("7-7.rlog"),
         ?assertMatch(
             #fs{
@@ -1161,7 +1160,7 @@ new_append() ->
 append_truncate1() ->
     {"append truncate", fun() ->
         zraft_util:del_dir(?DATA_DIR),
-        Log = load_fs({test, node()}),
+        Log = load_fs(test,{test, node()}),
         {ok, _, Log1} = handle_command({append, 0, 0, 0, ?INITIAL_ENTRY}, Log),
         {ok, OpRes, Log2} = handle_command(
             {append, 7, 8, 0, [#entry{index = 5, term = 3, data = <<"e">>, type = ?OP_CONFIG}]},
@@ -1193,7 +1192,7 @@ append_truncate1() ->
         LogEntriesTest = [E || E <- ?INITIAL_ENTRY,
             E#entry.index < 5] ++ [#entry{index = 5, term = 3, data = <<"e">>, type = ?OP_CONFIG}],
         Entries1 = entries(1, 7, Log2),
-        Log3 = load_fs({test, node()}),
+        Log3 = load_fs(test,{test, node()}),
         ?assertEqual(LogEntriesTest, Entries1),
         File3 = test_log_file_name("5-5.rlog"),
         ?assertMatch(
@@ -1221,7 +1220,7 @@ append_truncate1() ->
 append_truncate2() ->
     {"append truncate last", fun() ->
         zraft_util:del_dir(?DATA_DIR),
-        Log = load_fs({test, node()}),
+        Log = load_fs(test,{test, node()}),
         {ok, _, Log1} = handle_command({append, 0, 0, 0, ?INITIAL_ENTRY}, Log),
         {ok, OpRes, Log2} = handle_command(
             {append, 7, 8, 0, [#entry{index = 7, term = 3, data = <<"e">>, type = ?OP_CONFIG}]},
@@ -1255,7 +1254,7 @@ append_truncate2() ->
 snaphost_on_commit() ->
     {"snaphost on commit", fun() ->
         zraft_util:del_dir(?DATA_DIR),
-        Log = load_fs({test, node()}),
+        Log = load_fs(test,{test, node()}),
         {ok, _, Log1} = handle_command({append, 0, 0, 0, ?INITIAL_ENTRY}, Log),
         {ok, _, Log2} = handle_command(
             {append, 7, 8, 0, [#entry{index = 7, term = 3, data = <<"e">>, type = ?OP_CONFIG}]},
@@ -1278,7 +1277,7 @@ snaphost_on_commit() ->
             },
             Log3
         ),
-        Log4 = load_fs({test, node()}),
+        Log4 = load_fs(test,{test, node()}),
         File2 = test_log_file_name("7-7.rlog"),
         ?assertMatch(
             #fs{
@@ -1309,7 +1308,7 @@ snaphost_on_commit() ->
 snaphost_on_commit_all() ->
     {"snaphost on commit clean all", fun() ->
         zraft_util:del_dir(?DATA_DIR),
-        Log = load_fs({test, node()}),
+        Log = load_fs(test,{test, node()}),
         {ok, _, Log1} = handle_command({append, 0, 0, 0, ?INITIAL_ENTRY}, Log),
         {ok, OpRes, Log2} = handle_command({truncate_before, #snapshot_info{index = 7}}, Log1),
         check_snaphost_result(8, 7, 8, 7, ?BLANK_CONF, OpRes),
@@ -1328,7 +1327,7 @@ snaphost_on_commit_all() ->
         ),
         Entries1 = entries(0, 10, Log2),
         ?assertEqual([], Entries1),
-        Log3 = load_fs({test, node()}),
+        Log3 = load_fs(test,{test, node()}),
         ?assertMatch(
             #fs{
                 fcounter = 2,
@@ -1351,12 +1350,12 @@ snaphost_on_commit_all() ->
 corrupted_log_file() ->
     {"corrupted file", fun() ->
         zraft_util:del_dir(?DATA_DIR),
-        Log = load_fs({test, node()}),
+        Log = load_fs(test,{test, node()}),
         handle_command({append, 0, 0, 0, ?INITIAL_ENTRY}, Log),
         File1 = test_log_file_name("1-3.rlog"),
         File2 = test_log_file_name("4-6.rlog"),
         corrupt_file(File2),
-        Log2 = load_fs({test, node()}),
+        Log2 = load_fs(test,{test, node()}),
         File3 = test_log_file_name("4-4.rlog"),
         ?assertMatch(
             #fs{
@@ -1391,7 +1390,7 @@ corrupt_file(File) ->
 truncate_conflict() ->
     {"truncate and don't change commited", fun() ->
         zraft_util:del_dir(?DATA_DIR),
-        Log = load_fs({test, node()}),
+        Log = load_fs(test,{test, node()}),
         {ok, _, Log1} = handle_command({append, 0, 0, 0, ?INITIAL_ENTRY}, Log),
         {ok, _, Log2} = handle_command({append, 7, 8, 3, []}, Log1),
         FailEntries = [
@@ -1411,7 +1410,7 @@ truncate_conflict() ->
 server_log() ->
     {"server functions", fun() ->
         zraft_util:del_dir(?DATA_DIR),
-        {ok, FS} = start_link({test, node()}),
+        {ok, FS} = start_link({test, node()},test),
         Sync = append(FS, 0, 0, 0, ?INITIAL_ENTRY),
         OpRes = sync_fs(Sync),
         check_op_result(1, 7, 8, 0, {7, <<"g">>}, OpRes),
@@ -1425,7 +1424,7 @@ server_log() ->
         R5 = get_raft_meta(FS),
         ?assertEqual(new_raft_meta, R5),
         stop(FS),
-        {ok, FS1} = start_link({test, node()}),
+        {ok, FS1} = start_link({test, node()},test),
         #log_descr{last_index = R21, first_index = R31} = get_log_descr(FS1),
         ?assertEqual(7, R21),
         ?assertEqual(1, R31),

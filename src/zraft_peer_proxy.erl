@@ -721,7 +721,6 @@ commands() ->
                 prev_log_term = 5,
                 term = 6}}),
         R17 = wait_request(),
-        ?debugFmt("Myst ~p",[R17]),
         ?assertMatch(
             {replicate_log,#append_entries{entries = true, prev_log_index = 5}},
             R17
