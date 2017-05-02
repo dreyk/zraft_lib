@@ -120,7 +120,7 @@ Return:
 
 Write using session object.
 ```
-zraft_client:write(LaghtSessionObj,Data,Timeout).
+zraft_client:write(LightSessionObj,Data,Timeout).
 
 ```
 
@@ -153,7 +153,7 @@ Return:
 Or read data using light session object:
 
 ```
-zraft_client:query(LaghtSessionObj,Query,Timeout).
+zraft_client:query(LightSessionObj,Query,Timeout).
 
 ```
 
